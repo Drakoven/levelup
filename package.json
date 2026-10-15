@@ -1,6 +1,6 @@
 {
   "name": "levelup",
-  "version": "2.6.1",
+  "version": "2.6.2",
   "private": true,
   "description": "LEVEL UP — application sportive RPG (HTML, CSS et JavaScript natifs)",
   "scripts": {

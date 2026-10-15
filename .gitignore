@@ -1,0 +1,12 @@
+# Copies de sauvegarde locales faites avant chaque étape (inutiles sur GitHub)
+_sauvegarde_*/
+
+# Réglages locaux de l'assistant
+.claude/
+
+# Dépendances éventuelles
+node_modules/
+
+# Fichiers système
+.DS_Store
+Thumbs.db

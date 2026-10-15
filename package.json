@@ -1,0 +1,10 @@
+{
+  "name": "levelup",
+  "version": "2.4.0",
+  "private": true,
+  "description": "LEVEL UP — application sportive RPG (HTML, CSS et JavaScript natifs)",
+  "scripts": {
+    "test": "node --test tests/core.test.js tests/chrono.test.js tests/validation.test.js tests/coach.test.js tests/libre.test.js",
+    "start": "python -m http.server 5173"
+  }
+}

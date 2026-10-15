@@ -117,7 +117,7 @@ function readBackup() {
 }
 
 let data = loadData();
-let D = C.derive(data);   // état recalculé (XP, niveau, succès, stats…)
+let D = C.deriveGame(data);   // état recalculé (XP d'activité + quêtes, niveau, succès, stats…)
 if (needsSave) save();
 
 // ---------- 2. Recalcul et annonces ----------
@@ -127,7 +127,7 @@ let pendingLevelUp = null;
 function commit(mutate, opts = {}) {
   const before = D;
   mutate(data);
-  D = C.derive(data);
+  D = C.deriveGame(data);
   save();
   if (!opts.silent) announce(before, D);
   renderAll();
@@ -155,7 +155,7 @@ function feelSeg(prefix, current = 2) {
     return `<input type="radio" name="feel" id="${prefix}-${v}" value="${v}" ${v === current ? 'checked' : ''}><label for="${prefix}-${v}"><span>${emoji}</span>${words.join(' ')}</label>`;
   }).join('')}</div>`;
 }
-const ui = { showAllWeights: false, showAllExploits: false, showAllXp: false, statsPeriod: 'week', statsMetric: 'km', weightRange: 'recent' };
+const ui = { heroTab: 'quests', showAllQuests: false, showAllWeights: false, showAllExploits: false, showAllXp: false, statsPeriod: 'week', statsMetric: 'km', weightRange: 'recent' };
 
 // Carte du coach : recommandation du jour, proposition éventuelle, repères.
 // Toute la réflexion est dans core.js (coachAdvice), testée automatiquement.
@@ -308,7 +308,7 @@ function renderHome() {
 
     ${coachCard(coach)}
 
-    ${(() => { const nx = nextChallenges(1)[0]; return nx ? `<div class="card"><div class="row between"><div class="eyebrow">🎯 Prochain défi</div><button class="link-btn" data-go="hero">Tous les défis →</button></div>${challengeRow(nx)}</div>` : ''; })()}
+    ${(() => { const td = D.quests.today; return `<div class="card quest-card daily"><div class="row between"><div class="eyebrow">☀️ Quête du jour</div><button class="link-btn" data-action="open-quests">Journal de quêtes →</button></div>${questRow({ name: td.name, desc: td.desc, value: td.value, target: td.target, done: td.done }, 'daily', C.QUEST_XP.daily, td.kind === 'recovery' ? '<div class="small quest-note">😴 Jour de récupération : aucune course n\'est demandée.</div>' : '')}</div>`; })()}
 
     ${sessionCard(programSession(D.programStep), false, coach)}
 
@@ -569,8 +569,86 @@ function weightList(st) {
   ${rows.length > 5 ? `<button class="w-more" data-action="toggle-weights">${ui.showAllWeights ? 'Réduire' : `Voir les ${rows.length} pesées`}</button>` : ''}</div>`;
 }
 
-// ---------- Écran Perso : personnage, défis, succès, titres, exploits, XP ----------
-function renderHero() {
+// ---------- Écran Héros : Quêtes · Personnage · Succès ----------
+// (anciennement « Perso » : tout son contenu est conservé dans Personnage et Succès)
+const QUEST_ICON = { main: '📜', daily: '☀️', weekly: '🗓️', epic: '🐉' };
+const HERO_TABS = { quests: '📜 Quêtes', char: '🛡️ Personnage', badges: '🏆 Succès' };
+
+function questRow(q, kind, xp, extra = '') {
+  const pct = q.target > 0 ? clamp(q.value / q.target, 0, 1) : 0;
+  return `<div class="quest ${kind} ${q.done ? 'done' : ''}">
+    <div class="quest-ic">${q.done ? '✓' : QUEST_ICON[kind]}</div>
+    <div class="quest-main">
+      <div class="quest-head"><b>${esc(q.name)}</b><span class="quest-xp">+${xp} XP</span></div>
+      <div class="small muted">${esc(q.desc)}</div>
+      ${q.done ? `<div class="small quest-done">Terminée le ${fmtDate(q.done)}</div>`
+        : q.target > 0 ? `<div class="bar quest-bar"><i style="width:${pct * 100}%"></i></div><div class="small muted">${fmtNum(Math.min(q.value, q.target))} / ${fmtNum(q.target)}</div>`
+        : '<div class="small muted">Ajoute un objectif bonus dans ton profil pour l\'activer.</div>'}
+      ${extra}
+    </div>
+  </div>`;
+}
+
+// Bandeau compact du héros (niveau, titre, XP) en haut des sections Quêtes et Succès
+function heroStrip() {
+  const L = D.level, reward = C.REWARDS[L.n - 1];
+  return `<div class="card hero-strip">
+    <div class="hs-emblem">${L.n}<span>${reward.icon}</span></div>
+    <div class="hs-main"><div class="row between"><b>${esc(data.profile.name || 'Héros')} · ${L.title}</b><span class="xp-num small">${fmtNum(D.xp, 0)} XP</span></div>
+      <div class="bar" style="margin-top:6px"><i style="width:${L.pct * 100}%"></i></div>
+      <div class="small muted" style="margin-top:4px">${L.next ? `encore ${fmtNum(L.next.xp - D.xp, 0)} XP → ${L.next.title}` : 'Niveau maximum'}</div></div>
+  </div>`;
+}
+
+function questsSection() {
+  const Qs = D.quests, coach = C.coachAdvice(data, D);
+  const td = Qs.today;
+  const current = Qs.chapters.find(c => !c.locked && !c.done);
+  const history = Qs.history;
+  const shownHist = ui.showAllQuests ? history : history.slice(0, 8);
+  const e10kNote = e => {
+    if (e.id !== 'e10k') return '';
+    if (e.done && e.meta) return `<div class="small quest-note">⏱️ Séance chronométrée · ${e.meta.source === 'gps' ? '📍 distance mesurée par GPS' : '✍️ distance déclarée (saisie à la main, non mesurée par GPS)'}</div>`;
+    return '<div class="small quest-note">⏱️ Séance chronométrée obligatoire (course libre ou programme). Sans GPS, la distance sera indiquée comme déclarée.</div>';
+  };
+  return `
+    <div class="section-title"><h2>☀️ Quête du jour</h2><span class="muted small">+${C.QUEST_XP.daily} XP</span></div>
+    <div class="card quest-card daily">
+      ${questRow({ name: td.name, desc: td.desc, value: td.value, target: td.target, done: td.done }, 'daily', C.QUEST_XP.daily,
+        td.kind === 'recovery' ? '<div class="small quest-note">😴 Jour de récupération conseillé par le coach : aucune course n\'est demandée.</div>' : '')}
+      ${coach.kind === 'recovery' || coach.kind === 'rest' ? '' : '<p class="small muted" style="margin:6px 0 0">Jamais de course imposée : une marche compte aussi.</p>'}
+    </div>
+
+    <div class="section-title"><h2>🗓️ Quêtes de la semaine</h2><span class="muted small">+${C.QUEST_XP.weekly} XP chacune</span></div>
+    <div class="card quest-card weekly">${Qs.week.map(q => questRow(q, 'weekly', C.QUEST_XP.weekly)).join('')}</div>
+
+    <div class="section-title"><h2>📜 Quêtes principales</h2><span class="muted small">${Qs.chapters.filter(c => c.done).length}/${Qs.chapters.length} chapitres</span></div>
+    ${Qs.chapters.map(c => {
+      if (c.locked) return `<div class="chapter locked"><span>🔒</span><b>Chapitre ${c.n} · ${c.title}</b><span class="small muted">après le chapitre ${c.n - 1}</span></div>`;
+      if (c.done) return `<div class="chapter done"><span>✓</span><b>Chapitre ${c.n} · ${c.title}</b><span class="small muted">terminé le ${fmtDate(c.done)}</span></div>`;
+      return `<div class="card quest-card main chapter-open">
+        <div class="eyebrow">Chapitre ${c.n}</div>
+        <h2 class="chapter-title">${c.title}</h2>
+        <p class="small muted chapter-lore">« ${c.lore} »</p>
+        ${c.quests.map(q => questRow(q, 'main', C.QUEST_XP.main)).join('')}
+        <div class="chapter-reward">🏰 Chapitre terminé : <b>+${C.QUEST_XP.chapter} XP</b></div>
+      </div>`;
+    }).join('')}
+    ${current ? '' : Qs.chapters.every(c => c.done) ? '<p class="small muted">Tous les chapitres sont terminés. Ta légende est écrite !</p>' : ''}
+
+    <div class="section-title"><h2>🐉 Quêtes épiques</h2><span class="muted small">+${C.QUEST_XP.epic} XP chacune</span></div>
+    <div class="card quest-card epic">${Qs.epics.map(e => questRow(e, 'epic', C.QUEST_XP.epic, e10kNote(e))).join('')}</div>
+
+    <div class="section-title"><h2>📖 Quêtes terminées</h2><span class="muted small">${history.length}</span></div>
+    <div class="card" style="padding:8px 12px">${history.length ? shownHist.map(e => `
+      <div class="ex-row"><span class="ex-main"><b>${esc(e.label)}</b><span class="small muted">${fmtDate(e.date)}</span></span><span class="badge-xp lime">+${e.amount}</span></div>`).join('')
+      : '<p class="small muted">Tes quêtes accomplies apparaîtront ici.</p>'}
+      ${history.length > 8 ? `<button class="w-more" data-action="toggle-quests">${ui.showAllQuests ? 'Réduire' : `Voir les ${history.length} quêtes`}</button>` : ''}
+    </div>
+    <p class="small muted" style="margin:4px 2px 0">Les quêtes progressent toutes seules avec tes séances. Chaque récompense n'est donnée qu'une fois ; supprimer ou corriger une séance met le journal à jour. Un jour de repos ne rapporte pas d'XP… mais il ne fait rien perdre non plus.</p>`;
+}
+
+function characterSection() {
   const st = D.stats, L = D.level;
   const attrs = [
     { name: '🫁 Endurance', v: clamp(D.programStep / PROGRAM_STEPS * 80 + st.totals.km / 5, 0, 100), c: 'var(--lime)' },
@@ -580,19 +658,18 @@ function renderHero() {
   ];
   const unlocked = Object.keys(D.badges).length;
   const reward = C.REWARDS[L.n - 1], nextReward = L.next ? C.REWARDS[L.n] : null;
-  const challenges = nextChallenges(3);
-
-  // Journal des exploits : niveaux, succès et records, du plus récent au plus ancien
+  // Journal des exploits : niveaux, succès, records, chapitres et quêtes épiques
   const exploits = [
     ...Object.entries(D.levelDates).map(([n, date]) => ({ date, icon: C.REWARDS[n - 1].icon, text: `Niveau ${n} : ${LEVELS[n - 1].title}`, sub: `Récompense : ${C.REWARDS[n - 1].name}` })),
     ...BADGES.filter(b => D.badges[b.id]).map(b => ({ date: D.badges[b.id], icon: b.icon, text: `Succès : ${b.name}`, sub: b.desc })),
     ...D.ledger.filter(e => /^r[dr]:/.test(e.key)).map(e => ({ date: e.date, icon: '🏅', text: e.label.replace('🏅 ', ''), sub: `+${e.amount} XP` })),
+    ...D.quests.ledger.filter(e => /^q[ce]:/.test(e.key)).map(e => ({ date: e.date, icon: e.key.startsWith('qc') ? '🏰' : '🐉', text: e.label.replace(/^\S+ /, ''), sub: `+${e.amount} XP` })),
   ].sort((a, b) => b.date.localeCompare(a.date));
   const shownEx = ui.showAllExploits ? exploits : exploits.slice(0, 8);
   const xpRows = [...D.ledger].reverse();
   const shownXp = ui.showAllXp ? xpRows : xpRows.slice(0, 10);
 
-  $('#view-hero').innerHTML = `
+  return `
     <div class="card glow avatar-card">
       <div class="emblem">${L.n}<small>${L.title.toUpperCase()}</small><span class="emblem-reward" title="${esc(reward.name)}">${reward.icon}</span></div>
       <h1 style="margin-top:22px">${esc(data.profile.name || 'Héros')}</h1>
@@ -600,12 +677,7 @@ function renderHero() {
       <div class="bar" style="margin:16px 0 6px"><i style="width:${L.pct * 100}%"></i></div>
       <div class="row between small muted"><span>${fmtNum(D.xp, 0)} XP${L.next ? ` / ${fmtNum(L.next.xp, 0)}` : ''}</span>
         <span>${L.next ? `encore ${fmtNum(L.next.xp - D.xp, 0)} XP → ${nextReward.icon} ${L.next.title}` : 'Niveau maximum'}</span></div>
-      <div class="muted small" style="margin-top:8px">${unlocked}/${BADGES.length} succès débloqués</div>
-    </div>
-
-    <div class="section-title"><h2>Prochains défis</h2><span class="muted small">les plus proches</span></div>
-    <div class="card">${challenges.length ? challenges.map(challengeRow).join('') : '<p class="small muted" style="margin:0">Tous les défis disponibles sont réussis. Incroyable !</p>'}
-      <p class="small muted" style="margin:10px 0 0">Les défis de course ne sont pas proposés les jours de récupération : le repos fait partie du jeu.</p>
+      <div class="muted small" style="margin-top:8px">${fmtNum(D.activityXp, 0)} XP d'activité · ${fmtNum(D.questXp, 0)} XP de quêtes · ${unlocked}/${BADGES.length} succès</div>
     </div>
 
     <div class="section-title"><h2>Attributs</h2></div>
@@ -613,21 +685,6 @@ function renderHero() {
       <div class="attr"><div class="row"><span>${a.name}</span><b>${Math.round(a.v)}</b></div>
       <div class="bar"><i style="width:${a.v}%;background:${a.c}"></i></div></div>`).join('')}
     </div>
-
-    <div class="section-title"><h2>Succès</h2><span class="muted small">${unlocked}/${BADGES.length}</span></div>
-    ${Object.entries(C.BADGE_CATS).map(([cat, title]) => {
-      const list = BADGES.filter(b => b.cat === cat);
-      const got = list.filter(b => D.badges[b.id]).length;
-      return `<div class="cat-title"><span>${title}</span><span class="muted small">${got}/${list.length}</span></div>
-      <div class="badges">${list.map(b => {
-        const done = D.badges[b.id], pr = C.badgeProgress(b, D.snap);
-        return `<div class="bdg ${done ? 'unlocked' : 'locked'}">
-          <div class="i">${b.icon}</div><b>${b.name}</b>
-          <div class="bdg-d">${done ? `Débloqué le ${fmtDate(done)}` : b.desc}</div>
-          ${!done && pr.target > 0 ? `<div class="mini-bar"><i style="width:${clamp(pr.value / pr.target, 0, 1) * 100}%"></i></div>` : ''}
-        </div>`;
-      }).join('')}</div>`;
-    }).join('')}
 
     <div class="section-title"><h2>Titres et récompenses</h2></div>
     <div class="card" style="padding:10px"><div class="levels">${LEVELS.map((lv, i) => {
@@ -662,8 +719,48 @@ function renderHero() {
       <tr><td>📅 Objectif hebdo (3 jours actifs)</td><td>+${XP.weeklyGoal}</td></tr>
       <tr><td>🏅 Nouveau record perso (mesuré)</td><td>+${XP.record}</td></tr>
       <tr><td>⚖️ Pesée hebdomadaire</td><td>+${XP.weighIn}</td></tr>
+      <tr><td>☀️ Quête du jour</td><td>+${C.QUEST_XP.daily}</td></tr>
+      <tr><td>🗓️ Quête de la semaine</td><td>+${C.QUEST_XP.weekly}</td></tr>
+      <tr><td>📜 Quête principale · 🏰 chapitre</td><td>+${C.QUEST_XP.main} · +${C.QUEST_XP.chapter}</td></tr>
+      <tr><td>🐉 Quête épique</td><td>+${C.QUEST_XP.epic}</td></tr>
     </table>
-    <p class="small muted" style="margin:12px 0 0">L'XP récompense la régularité, pas la vitesse de perte de poids. Les succès sont des récompenses symboliques : ils ne rapportent pas d'XP en plus.</p></div>`;
+    <p class="small muted" style="margin:12px 0 0">L'XP récompense la régularité, pas la vitesse de perte de poids. Les succès sont des récompenses symboliques : ils ne rapportent pas d'XP en plus. Chaque quête ne rapporte qu'une fois.</p></div>`;
+}
+
+function badgesSection() {
+  const unlocked = Object.keys(D.badges).length;
+  const challenges = nextChallenges(3);
+  return `
+    <div class="section-title"><h2>Prochains défis</h2><span class="muted small">les plus proches</span></div>
+    <div class="card">${challenges.length ? challenges.map(challengeRow).join('') : '<p class="small muted" style="margin:0">Tous les défis disponibles sont réussis. Incroyable !</p>'}
+      <p class="small muted" style="margin:10px 0 0">Les défis de course ne sont pas proposés les jours de récupération : le repos fait partie du jeu.</p>
+    </div>
+
+    <div class="section-title"><h2>Succès</h2><span class="muted small">${unlocked}/${BADGES.length}</span></div>
+    ${Object.entries(C.BADGE_CATS).map(([cat, title]) => {
+      const list = BADGES.filter(b => b.cat === cat);
+      const got = list.filter(b => D.badges[b.id]).length;
+      return `<div class="cat-title"><span>${title}</span><span class="muted small">${got}/${list.length}</span></div>
+      <div class="badges">${list.map(b => {
+        const done = D.badges[b.id], pr = C.badgeProgress(b, D.snap);
+        return `<div class="bdg ${done ? 'unlocked' : 'locked'}">
+          <div class="i">${b.icon}</div><b>${b.name}</b>
+          <div class="bdg-d">${done ? `Débloqué le ${fmtDate(done)}` : b.desc}</div>
+          ${!done && pr.target > 0 ? `<div class="mini-bar"><i style="width:${clamp(pr.value / pr.target, 0, 1) * 100}%"></i></div>` : ''}
+        </div>`;
+      }).join('')}</div>`;
+    }).join('')}`;
+}
+
+function renderHero() {
+  const tab = HERO_TABS[ui.heroTab] ? ui.heroTab : 'quests';
+  $('#view-hero').innerHTML = `
+    <div class="eyebrow">Héros</div>
+    <h1>${tab === 'quests' ? 'Journal de quêtes' : tab === 'char' ? 'Personnage' : 'Succès'}</h1>
+    <div class="hero-tabs" role="tablist">${Object.entries(HERO_TABS).map(([k, label]) =>
+      `<button class="hero-tab ${k === tab ? 'on' : ''}" data-action="hero-tab" data-v="${k}" role="tab" aria-selected="${k === tab}">${label}</button>`).join('')}</div>
+    ${tab === 'char' ? '' : heroStrip()}
+    ${tab === 'quests' ? questsSection() : tab === 'char' ? characterSection() : badgesSection()}`;
 }
 
 // ---------- Écran Statistiques ----------
@@ -1217,7 +1314,7 @@ async function importFile(file) {
     return;
   }
   const { data: incoming, report } = parsed;
-  const preview = C.derive(incoming);
+  const preview = C.deriveGame(incoming);
   const dropped = report.droppedSessions + report.droppedWeights;
   const msg = `Importer cette sauvegarde ?\n\n` +
     `• Pseudo : ${incoming.profile.name || '—'}\n` +
@@ -1229,7 +1326,7 @@ async function importFile(file) {
   if (!confirm(msg)) return;
   backup('import');
   data = incoming;
-  D = C.derive(data);
+  D = C.deriveGame(data);
   save();
   renderAll();
   go('home');
@@ -1244,7 +1341,7 @@ function restoreBackup() {
   const restored = bk.parsed.data;
   backup('restore');
   data = restored;
-  D = C.derive(data);
+  D = C.deriveGame(data);
   save();
   renderAll();
   go('home');
@@ -1571,7 +1668,7 @@ function summaryEntry() {
 // Aperçu de l'XP gagnée si on enregistre (calcul exact via core.js)
 function summaryXP(entry) {
   const trial = { ...data, sessions: [...data.sessions, { id: 'apercu', createdAt: Date.now(), ...entry }] };
-  return C.derive(trial).xp - D.xp;
+  return C.deriveGame(trial).xp - D.xp;
 }
 
 function drawSummary() {
@@ -1943,6 +2040,9 @@ document.addEventListener('click', e => {
     case 'del-weight': return deleteWeight(a.dataset.date);
     case 'toggle-weights': ui.showAllWeights = !ui.showAllWeights; return renderStats();
     case 'toggle-exploits': ui.showAllExploits = !ui.showAllExploits; return renderHero();
+    case 'toggle-quests': ui.showAllQuests = !ui.showAllQuests; return renderHero();
+    case 'hero-tab': ui.heroTab = a.dataset.v; renderHero(); return window.scrollTo({ top: 0 });
+    case 'open-quests': ui.heroTab = 'quests'; renderHero(); return go('hero');
     case 'toggle-xp': ui.showAllXp = !ui.showAllXp; return renderHero();
     case 'stats-period': ui.statsPeriod = a.dataset.v; return renderStats();
     case 'stats-metric': ui.statsMetric = a.dataset.v; return renderStats();
@@ -1953,7 +2053,7 @@ document.addEventListener('click', e => {
     case 'apply-update': return applyUpdate();
     case 'reset':
       if (confirm('Effacer toute ta progression ? Une copie de secours sera gardée sur cet appareil.')) {
-        backup('reset'); data = C.emptyData(); D = C.derive(data); save(); obStep = 0; renderAll(); go('home');
+        backup('reset'); data = C.emptyData(); D = C.deriveGame(data); save(); obStep = 0; renderAll(); go('home');
       }
       return;
   }
@@ -2030,7 +2130,7 @@ window.addEventListener('hashchange', () => go(location.hash.slice(1)));
 // Une autre fenêtre de l'app a modifié les données : on se resynchronise
 window.addEventListener('storage', e => {
   if (e.key !== STORAGE_KEY) return;
-  data = loadData(); D = C.derive(data); renderAll();
+  data = loadData(); D = C.deriveGame(data); renderAll();
 });
 
 // Changement de jour (app laissée ouverte après minuit) et retour au premier plan
@@ -2038,7 +2138,7 @@ let currentDay = todayISO();
 function checkDay() {
   if (todayISO() === currentDay) return;
   currentDay = todayISO();
-  D = C.derive(data);
+  D = C.deriveGame(data);
   renderAll();
 }
 setInterval(checkDay, 60000);

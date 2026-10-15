@@ -7,6 +7,8 @@ rapporte de l'XP, fait monter ton personnage de niveau… et toi aussi, dans la 
 
 ## Fonctionnalités
 
+- **Journal de quêtes** (onglet Héros) : quêtes principales en chapitres, quotidiennes, hebdomadaires et épiques,
+  adaptées au niveau et à la récupération, XP attribuée une seule fois.
 - **Personnage RPG** : 9 rangs (Recrue → Légende) avec récompenses symboliques, XP, 34 succès et défis progressifs, journal des exploits, historique des XP.
 - **Programme course 12 semaines** : du 6 × 1 min de course jusqu'à 30 min sans s'arrêter.
 - **Assistant de course** : chrono d'intervalles, compte à rebours, annonces vocales en français,
@@ -38,7 +40,7 @@ Application en HTML, CSS et JavaScript natifs, sans dépendance.
 - `sw.js` : fonctionnement hors connexion et mises à jour.
 
 ```bash
-npm test          # 155 tests automatisés (Node.js 18 ou plus)
+npm test          # 186 tests automatisés (Node.js 18 ou plus)
 npm start         # serveur local sur http://localhost:5173
 ```
 

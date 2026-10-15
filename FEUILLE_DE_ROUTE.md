@@ -17,7 +17,7 @@ sauvegarde avant toute migration, tests automatisés, compte rendu à chaque ét
 
 ## Prochaines étapes (PWA)
 
-### Étape 5.5 — Journal de quêtes (proposée, à valider)
+### Étape 5.5 — Journal de quêtes ✅ (version 2.6.1)
 - Univers Fantasy / MMORPG discret, au service de l'entraînement réel.
 - Quêtes principales en chapitres, quotidiennes, hebdomadaires et épiques.
 - Progression automatique à partir des séances enregistrées (aucune validation manuelle).

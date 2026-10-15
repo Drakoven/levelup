@@ -130,6 +130,50 @@
   for (const b of BADGES) b.test = s => { const { value, target } = badgeProgress(b, s); return target > 0 && value >= target; };
 
   // Récompenses symboliques débloquées à chaque rang
+  // ---------- Journal de quêtes (étape 5.5) ----------
+  // Les quêtes réutilisent le moteur des défis (metric / target / badgeProgress).
+  // Contrairement aux succès, elles rapportent de l'XP : une seule fois par accomplissement,
+  // grâce à une clé unique (ex. « qm:c1q2 », « qd:2026-10-19 », « qw:2026-10-19:days »).
+  // Tout est recalculé à partir des séances : supprimer ou corriger une séance retire
+  // ou déplace la récompense ; un import ne peut pas la dupliquer.
+  const QUEST_XP = { main: 50, chapter: 150, daily: 15, weekly: 50, epic: 250 };
+  const Q = (id, name, desc, metric, target, extra = {}) => ({ id, name, desc, metric, target, ...extra });
+  const CHAPTERS = [
+    { id: 'c1', title: 'L\'Éveil', lore: 'Tout héros commence par un premier pas.', quests: [
+      Q('c1q1', 'Premier pas', 'Termine ta première séance', s => s.sessions, 1),
+      Q('c1q2', 'Trois foulées', 'Termine 3 séances', s => s.sessions, 3),
+      Q('c1q3', 'Le point zéro', 'Enregistre ta première pesée', s => s.weights, 1),
+    ] },
+    { id: 'c2', title: 'La Route', lore: 'Les chemins s\'ouvrent à ceux qui reviennent.', quests: [
+      Q('c2q1', 'Dix bornes', 'Parcours 10 km au total', s => s.km, 10),
+      Q('c2q2', 'Semaine du voyageur', 'Sois actif 3 jours dans une même semaine', s => s.perfectWeeks, 1),
+      Q('c2q3', 'Souffle naissant', 'Cours 5 min sans t\'arrêter (mesuré au chrono)', s => s.maxRun, 5, { run: true }),
+    ] },
+    { id: 'c3', title: 'L\'Endurance', lore: 'La patience forge les jambes.', quests: [
+      Q('c3q1', 'Explorateur', 'Parcours 25 km au total', s => s.km, 25),
+      Q('c3q2', 'Dix minutes de feu', 'Cours 10 min sans t\'arrêter (mesuré au chrono)', s => s.maxRun, 10, { run: true }),
+      Q('c3q3', 'Mi-chemin', 'Atteins la semaine 6 du programme', s => s.progStep, 15, { run: true }),
+    ] },
+    { id: 'c4', title: 'Le Coureur', lore: 'Ton pas devient régulier comme une horloge.', quests: [
+      Q('c4q1', 'Voyageur', 'Parcours 50 km au total', s => s.km, 50),
+      Q('c4q2', 'Le rythme du héros', '4 semaines d\'affilée avec au moins 2 jours actifs', s => s.gentleBest, 4),
+      Q('c4q3', 'Vingt minutes', 'Cours 20 min sans t\'arrêter (mesuré au chrono)', s => s.maxRun, 20, { run: true }),
+    ] },
+    { id: 'c5', title: 'La Légende', lore: 'On parlera de toi dans les tavernes.', quests: [
+      Q('c5q1', 'Grand voyageur', 'Parcours 75 km au total', s => s.km, 75),
+      Q('c5q2', 'Le souffle du dragon', 'Cours 25 min sans t\'arrêter (mesuré au chrono)', s => s.maxRun, 25, { run: true }),
+      Q('c5q3', 'La promesse tenue', 'Atteins ton objectif de poids principal', s => s.maxLost, s => s.goalTotal),
+    ] },
+  ];
+  const EPICS = [
+    Q('e100', 'Centurion', 'Parcours 100 km au total', s => s.km, 100),
+    Q('e10k', 'Les dix mille', 'Cours 10 km en une seule séance chronométrée', s => s.bestTimedRunKm, 10, { run: true }),
+    Q('e30', 'Trente minutes de légende', 'Cours 30 min sans t\'arrêter (mesuré au chrono)', s => s.maxRun, 30, { run: true }),
+    Q('ebonus', 'Au-delà de l\'horizon', 'Atteins ton objectif bonus', s => s.maxLost, s => s.bonusTotal),
+  ];
+  const QUEST_METRICS = [...CHAPTERS.flatMap(c => c.quests), ...EPICS];
+  for (const q of QUEST_METRICS) q.test = s => { const { value, target } = badgeProgress(q, s); return target > 0 && value >= target; };
+
   const REWARDS = [
     { icon: '🎒', name: 'Sac du départ' },
     { icon: '🎽', name: 'Maillot d\'apprenti' },
@@ -363,7 +407,9 @@
     const perfectWeeks = new Set();
     const weighWeeks = new Set();
     const records = { maxDistance: 0, maxRun: 0, maxDistanceDate: null, maxRunDate: null };
-    const acc = { sessions: 0, km: 0, minutes: 0, strength: 0, weights: 0, maxLost: 0, walks: 0, walkKm: 0, freeRuns: 0, freeWalks: 0, respected: 0 };
+    const acc = { sessions: 0, km: 0, minutes: 0, strength: 0, weights: 0, maxLost: 0, walks: 0, walkKm: 0, freeRuns: 0, freeWalks: 0, respected: 0, bestTimedRunKm: 0, progStep: 0 };
+    const questDates = {};   // quête (principale / épique) → date où l'objectif a été atteint
+    const questMeta = {};    // détails utiles à l'affichage (ex. distance déclarée des 10 km)
     let bestStreak = 0, gentleBest = 0, pendingHard = null, snap = null;
     const gentleWeeks = new Set(); // semaines avec au moins 2 jours actifs
 
@@ -407,6 +453,12 @@
         if (s.type === 'strength') acc.strength++;
         if (s.type === 'walk') { acc.walks++; acc.walkKm = round(acc.walkKm + s.km, 2); }
         if (s.mode === 'libre') { if (s.type === 'run') acc.freeRuns++; else acc.freeWalks++; }
+        // Quête « 10 km » : uniquement une course CHRONOMÉTRÉE (la distance peut être déclarée)
+        if (s.type === 'run' && s.timing && s.km > 0) {
+          acc.bestTimedRunKm = Math.max(acc.bestTimedRunKm, s.km);
+          if (s.km >= 10 && !questMeta.e10k) questMeta.e10k = { date: s.date, km: s.km, source: (s.distance && s.distance.source) || 'manuel', ref: s.id };
+        }
+        if (s.prog && s.prog.adapt === 'up') acc.progStep = Math.max(acc.progStep, s.prog.step + 1);
         // Récupération respectée : après une course difficile, la suivante attend le repos conseillé
         if (s.type === 'run') {
           if (pendingHard && daysBetween(pendingHard.date, s.date) > restDaysAfter(pendingHard)) acc.respected++;
@@ -425,6 +477,7 @@
       // Succès débloqués par cette saisie
       snap = { ...acc, perfectWeeks: perfectWeeks.size, bestStreak, gentleBest, maxRun: records.maxRun, goalTotal, bonusTotal };
       for (const b of BADGES) if (!badges[b.id] && b.test(snap)) badges[b.id] = it.date;
+      for (const q of QUEST_METRICS) if (!questDates[q.id] && q.test(snap)) questDates[q.id] = it.date;
     }
     if (!snap) snap = { ...acc, perfectWeeks: 0, bestStreak: 0, gentleBest: 0, maxRun: 0, goalTotal, bonusTotal };
     // Récupération en cours : une course difficile récente dont le repos est respecté jusqu'à aujourd'hui compte aussi
@@ -453,7 +506,7 @@
     const lastProgram = [...sessions].reverse().find(s => s.prog && s.prog.valid) || null;
 
     return {
-      xp, level: levelInfo(xp), ledger, badges, records, programStep: step, adjustments, levelDates, snap,
+      xp, level: levelInfo(xp), ledger, badges, records, programStep: step, adjustments, levelDates, snap, questDates, questMeta,
       sessions,                                     // séances enrichies (xp, label, prog), ordre chronologique
       sessionsById: Object.fromEntries(sessions.map(s => [s.id, s])),
       stats: {
@@ -1119,6 +1172,146 @@
     return { weeks, months, totals, types, records, compare, weight };
   }
 
+  // ---------- 12. Journal de quêtes : calcul ----------
+  const maxDate = (a, b) => (!a ? b : !b ? a : a > b ? a : b);
+
+  // Quête du jour, décidée UNIQUEMENT avec les séances des jours précédents (résultat stable).
+  //  - Jour de récupération (lendemain d'une course, 2 jours après une course très difficile) :
+  //    marche douce de 15 min. Une course ce jour-là ne valide PAS la quête.
+  //  - Autre jour : bouger 20 min (30 min après 12 séances du programme), à pied, en courant ou en muscu.
+  //  - Rien n'est jamais imposé : sans séance, pas de récompense et pas de pénalité.
+  function dailyQuestFor(date, sessions) {
+    const before = sessions.filter(s => s.date < date);
+    const lastRun = [...before].reverse().find(s => s.type === 'run');
+    // Mêmes règles que le coach : lendemain d'une course (2 jours après « Très difficile »),
+    // ou programme de la semaine déjà bouclé (3 séances validées ou déclarées).
+    const restAfterRun = !!lastRun && daysBetween(lastRun.date, date) <= restDaysAfter(lastRun);
+    const programWeekDone = before.filter(s => weekKey(s.date) === weekKey(date) && s.prog && s.prog.valid).length >= WEEKLY_TARGET;
+    if (restAfterRun || programWeekDone) return {
+      kind: 'recovery', reason: restAfterRun ? 'apres-course' : 'semaine-bouclee', name: 'Marche douce',
+      desc: 'Une marche tranquille d\'au moins 15 min. Le repos complet est aussi un bon choix (sans XP, sans pénalité).', minutes: 15, types: ['walk'],
+    };
+    const progDone = before.filter(s => s.prog && s.prog.valid).length;
+    const minutes = progDone >= 12 ? 30 : 20;
+    return { kind: 'active', name: `Bouger ${minutes} minutes`, desc: `Séance du programme, course libre, marche ou musculation : au moins ${minutes} min, comme tu le sens.`, minutes, types: ['walk', 'run', 'strength'] };
+  }
+  const dailyProgress = (q, daySessions) => {
+    const ok = daySessions.filter(s => q.types.includes(s.type));
+    const best = ok.reduce((m, s) => Math.max(m, s.duration), 0);
+    const hit = ok.find(s => s.duration >= q.minutes);
+    return { value: Math.min(best, q.minutes), target: q.minutes, done: hit ? hit.date : null, ref: hit ? hit.id : null };
+  };
+
+  // Quêtes de la semaine, adaptées au niveau à partir des semaines PRÉCÉDENTES uniquement.
+  function weeklyQuestsFor(wk, sessions, programDone) {
+    const before = sessions.filter(s => weekKey(s.date) < wk);
+    const days = new Map();
+    for (const s of before) { const k = weekKey(s.date); if (!days.has(k)) days.set(k, new Set()); days.get(k).add(s.date); }
+    const beginner = ![...days.values()].some(set => set.size >= WEEKLY_TARGET); // jamais eu de semaine à 3 jours actifs
+    const prev = [1, 2, 3, 4].map(i => shiftWeek(wk, -i));
+    const avgKm = prev.reduce((a, k) => a + before.filter(s => weekKey(s.date) === k).reduce((b, s) => b + s.km, 0), 0) / 4;
+    const kmTarget = avgKm > 0 ? Math.max(2, round(avgKm * 1.1, 1)) : 3; // jamais plus de 10 % au-dessus de la moyenne récente
+    // Pas de doublon avec l'objectif hebdo existant (3 jours actifs = +200 XP) :
+    // débutant → 2 jours ; ensuite → une vraie marche de 30 min (la marche est valorisée).
+    const list = [
+      beginner
+        ? { id: 'days', name: 'Deux jours en mouvement', desc: 'Sois actif 2 jours différents cette semaine', target: 2 }
+        : { id: 'walk', name: 'La grande marche', desc: "Fais une marche d'au moins 30 min cette semaine", target: 1 },
+      { id: 'km', name: 'La route de la semaine', desc: `Parcours ${String(kmTarget).replace('.', ',')} km cette semaine (marche ou course)`, target: kmTarget },
+    ];
+    if (!programDone) list.push({ id: 'prog', name: 'Fidèle au programme', desc: 'Valide ou déclare une séance du programme guidé', target: 1 });
+    return list;
+  }
+
+  function deriveQuests(data, Dd, today = todayISO()) {
+    const ledger = [];
+    const past = Dd.sessions.filter(s => s.date <= today);
+    const qd = Dd.questDates || {};
+
+    // Quêtes principales : un chapitre s'ouvre quand le précédent est terminé.
+    // Une quête déjà accomplie avant l'ouverture de son chapitre est validée à l'ouverture.
+    let openAt = null, prevDone = true;
+    const chapters = CHAPTERS.map((ch, ci) => {
+      const locked = !prevDone;
+      const quests = ch.quests.map(q => {
+        const pr = badgeProgress(q, Dd.snap);
+        const done = !locked && qd[q.id] ? maxDate(qd[q.id], openAt) : null;
+        if (done) ledger.push({ key: `qm:${q.id}`, date: done, amount: QUEST_XP.main, label: `📜 Quête : ${q.name}`, qtype: 'main' });
+        return { id: q.id, name: q.name, desc: q.desc, run: !!q.run, ...pr, done };
+      });
+      const done = !locked && quests.every(q => q.done) ? quests.reduce((d, q) => maxDate(d, q.done), null) : null;
+      if (done) ledger.push({ key: `qc:${ch.id}`, date: done, amount: QUEST_XP.chapter, label: `🏰 Chapitre terminé : ${ch.title}`, qtype: 'chapter' });
+      const out = { id: ch.id, n: ci + 1, title: ch.title, lore: ch.lore, locked, openedAt: locked ? null : openAt, done, quests };
+      prevDone = !!done;
+      openAt = done;
+      return out;
+    });
+
+    // Quêtes épiques
+    const epics = EPICS.map(q => {
+      const pr = badgeProgress(q, Dd.snap);
+      const done = qd[q.id] || null;
+      if (done) ledger.push({ key: `qe:${q.id}`, date: done, amount: QUEST_XP.epic, label: `🐉 Quête épique : ${q.name}`, qtype: 'epic' });
+      const meta = q.id === 'e10k' && Dd.questMeta && Dd.questMeta.e10k ? Dd.questMeta.e10k : null;
+      return { id: q.id, name: q.name, desc: q.desc, run: !!q.run, ...pr, done, meta };
+    });
+
+    // Quêtes du jour : chaque jour où une séance a eu lieu, plus aujourd'hui (affichage)
+    const dates = [...new Set(past.map(s => s.date))];
+    if (!dates.includes(today)) dates.push(today);
+    let todayQuest = null;
+    for (const date of dates.sort()) {
+      const q = dailyQuestFor(date, past);
+      const pr = dailyProgress(q, past.filter(s => s.date === date));
+      if (pr.done) ledger.push({ key: `qd:${date}`, date, amount: QUEST_XP.daily, label: `☀️ Quête du jour : ${q.name}`, qtype: 'daily', ref: pr.ref });
+      if (date === today) todayQuest = { ...q, ...pr, date };
+    }
+
+    // Quêtes de la semaine : de la première semaine active jusqu'à la semaine en cours
+    const programDone = programSession(Dd.programStep).done;
+    let thisWeek = [];
+    {
+      const first = past.length ? weekKey(past[0].date) : weekKey(today);
+      for (let wk = first; wk <= weekKey(today); wk = shiftWeek(wk, 1)) {
+        const list = weeklyQuestsFor(wk, past, programDone);
+        const week = past.filter(s => weekKey(s.date) === wk);
+        const days = new Set(); let km = 0, prog = 0, walk = 0;
+        const doneAt = {};
+        for (const s of week) {
+          days.add(s.date); km = round(km + s.km, 2); if (s.prog && s.prog.valid) prog++;
+          if (s.type === 'walk' && s.duration >= 30) walk++;
+          const val = { days: days.size, km, prog, walk };
+          for (const q of list) if (!doneAt[q.id] && val[q.id] >= q.target) doneAt[q.id] = s.date;
+        }
+        const val = { days: days.size, km, prog, walk };
+        const res = list.map(q => ({ ...q, value: round(Math.min(val[q.id], q.target), 1), done: doneAt[q.id] || null }));
+        for (const q of res) if (q.done) ledger.push({ key: `qw:${wk}:${q.id}`, date: q.done, amount: QUEST_XP.weekly, label: `🗓️ Quête de la semaine : ${q.name}`, qtype: 'weekly' });
+        if (wk === weekKey(today)) thisWeek = res;
+      }
+    }
+
+    ledger.sort((a, b) => a.date.localeCompare(b.date));
+    const xp = ledger.reduce((a, e) => a + e.amount, 0);
+    return { ledger, xp, chapters, epics, today: todayQuest, week: thisWeek, history: [...ledger].reverse() };
+  }
+
+  // État complet du jeu = activité (derive, inchangé) + quêtes.
+  // L'XP d'activité et l'XP de quête restent séparées ; le niveau utilise le total.
+  function deriveGame(data, today = todayISO()) {
+    const Dd = derive(data, today);
+    const Qd = deriveQuests(data, Dd, today);
+    const ledger = [...Dd.ledger.map(e => ({ ...e })), ...Qd.ledger.map(e => ({ ...e }))]
+      .sort((a, b) => a.date.localeCompare(b.date)); // tri stable : l'ordre d'une même journée est conservé
+    const levelDates = {};
+    let cum = 0, lv = 1;
+    for (const e of ledger) {
+      cum += e.amount;
+      e.total = cum;
+      while (lv < LEVELS.length && cum >= LEVELS[lv].xp) { levelDates[lv + 1] = e.date; lv++; }
+    }
+    return { ...Dd, activityXp: Dd.xp, questXp: Qd.xp, xp: cum, level: levelInfo(cum), ledger, levelDates, quests: Qd };
+  }
+
   // ---------- 9. Coach adaptatif ----------
   // Le coach lit les données (ressenti, régularité, séances, récupération, endurance)
   // et PROPOSE. Il ne change jamais le programme tout seul au-delà des règles validées
@@ -1242,6 +1435,7 @@
   }
 
   return {
+    QUEST_XP, CHAPTERS, EPICS, dailyQuestFor, weeklyQuestsFor, deriveQuests, deriveGame,
     BADGE_CATS, REWARDS, badgeProgress, statsReport, MEASURED_SOURCES, monthKey, shiftMonth,
     XP, WEEKLY_TARGET, LIMITS, LEVELS, PROGRAM, PROGRAM_STEPS, WARMUP, COOLDOWN, BADGES, HEALTHY_PACE, SCHEMA_VERSION, DAY,
     toISO, parseISO, todayISO, daysBetween, weekKey, shiftWeek, addDays, isValidISO, fmtMin,

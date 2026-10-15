@@ -16,6 +16,7 @@
   --violet: #8b5cf6;    /* XP / niveaux */
   --orange: #ff8a3d;    /* série / feu */
   --pink: #ff4d8d;      /* musculation */
+  --gold: #f5c542;      /* quêtes principales (touche Fantasy) */
   --radius: 22px;
   --font: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
   --display: 'Space Grotesk', 'Inter', system-ui, sans-serif;
@@ -475,3 +476,43 @@ label.f input[type=range] { padding: 0; min-height: 0; height: 28px; border: 0; 
 .voice-pick > span { display: flex; flex-direction: column; min-width: 0; font-size: 14px; }
 .voice-play { width: 40px; height: 40px; flex: none; border-radius: 12px; display: grid; place-items: center; font-size: 15px; color: var(--lime); background: var(--card-2); border: 1px solid var(--border); }
 .voice-play:active { transform: scale(.94); }
+
+/* ---------- Héros : journal de quêtes (étape 5.5) ---------- */
+.hero-tabs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 10px 0 14px; padding: 4px; border-radius: 16px; background: var(--card); border: 1px solid var(--border); }
+.hero-tab { padding: 10px 4px; border-radius: 12px; font-size: 13px; font-weight: 700; color: var(--muted); }
+.hero-tab.on { color: var(--text); background: rgba(245,197,66,.12); box-shadow: inset 0 0 0 1px rgba(245,197,66,.45); }
+.hero-strip { display: flex; gap: 14px; align-items: center; padding: 14px; }
+.hs-emblem { position: relative; width: 52px; height: 52px; flex: none; border-radius: 16px; display: grid; place-items: center; font-family: var(--display); font-size: 24px; font-weight: 700; background: linear-gradient(135deg, var(--violet), var(--cyan)); box-shadow: 0 0 18px rgba(139,92,246,.4); }
+.hs-emblem span { position: absolute; right: -8px; bottom: -8px; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; font-size: 13px; background: var(--bg); border: 1px solid var(--border); }
+.hs-main { flex: 1; min-width: 0; font-size: 14px; }
+
+.quest-card { border-left: 3px solid var(--qc, var(--border)); }
+.quest-card.daily { --qc: var(--cyan); }
+.quest-card.weekly { --qc: var(--violet); }
+.quest-card.main { --qc: var(--gold); background: linear-gradient(160deg, rgba(245,197,66,.08), var(--card) 45%); }
+.quest-card.epic { --qc: var(--orange); }
+.quest { display: flex; gap: 12px; padding: 10px 0; }
+.quest + .quest { border-top: 1px solid var(--border); }
+.quest-ic { width: 38px; height: 38px; flex: none; border-radius: 12px; display: grid; place-items: center; font-size: 18px; background: rgba(255,255,255,.05); }
+.quest.done .quest-ic { background: rgba(198,255,61,.15); color: var(--lime); font-weight: 800; }
+.quest-main { flex: 1; min-width: 0; font-size: 14px; }
+.quest-head { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.quest-xp { font-size: 12px; font-weight: 700; white-space: nowrap; color: var(--gold); }
+.quest.daily .quest-xp { color: var(--cyan); }
+.quest.weekly .quest-xp { color: #c4b5fd; }
+.quest.epic .quest-xp { color: var(--orange); }
+.quest-bar { height: 6px; margin: 8px 0 4px; }
+.quest.daily .quest-bar i { background: var(--cyan); }
+.quest.weekly .quest-bar i { background: linear-gradient(90deg, var(--violet), #c4b5fd); }
+.quest.main .quest-bar i { background: linear-gradient(90deg, #c9971c, var(--gold)); }
+.quest.epic .quest-bar i { background: linear-gradient(90deg, var(--pink), var(--orange)); }
+.quest-done { color: var(--lime); margin-top: 4px; }
+.quest-note { margin-top: 6px; color: var(--muted); line-height: 1.4; }
+.chapter { display: flex; align-items: center; gap: 10px; padding: 12px 14px; margin-bottom: 8px; border-radius: 16px; font-size: 14px; background: var(--card); border: 1px solid var(--border); }
+.chapter b { flex: 1; min-width: 0; }
+.chapter.done span:first-child { color: var(--gold); font-weight: 800; }
+.chapter.locked { opacity: .5; }
+.chapter-title { font-family: var(--display); font-size: 22px; margin: 2px 0 2px; color: var(--gold); text-shadow: 0 0 18px rgba(245,197,66,.25); }
+.chapter-lore { margin: 0 0 6px; font-style: italic; }
+.chapter-reward { margin-top: 10px; padding-top: 10px; border-top: 1px dashed rgba(245,197,66,.35); font-size: 13px; color: var(--muted); }
+.chapter-reward b { color: var(--gold); }

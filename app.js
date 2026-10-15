@@ -155,7 +155,7 @@ function feelSeg(prefix, current = 2) {
     return `<input type="radio" name="feel" id="${prefix}-${v}" value="${v}" ${v === current ? 'checked' : ''}><label for="${prefix}-${v}"><span>${emoji}</span>${words.join(' ')}</label>`;
   }).join('')}</div>`;
 }
-const ui = { showAllWeights: false };
+const ui = { showAllWeights: false, showAllExploits: false, showAllXp: false, statsPeriod: 'week', statsMetric: 'km', weightRange: 'recent' };
 
 // Carte du coach : recommandation du jour, proposition éventuelle, repères.
 // Toute la réflexion est dans core.js (coachAdvice), testée automatiquement.
@@ -308,6 +308,8 @@ function renderHome() {
 
     ${coachCard(coach)}
 
+    ${(() => { const nx = nextChallenges(1)[0]; return nx ? `<div class="card"><div class="row between"><div class="eyebrow">🎯 Prochain défi</div><button class="link-btn" data-go="hero">Tous les défis →</button></div>${challengeRow(nx)}</div>` : ''; })()}
+
     ${sessionCard(programSession(D.programStep), false, coach)}
 
     ${freeCard('Envie de bouger autrement ?')}`;
@@ -407,114 +409,116 @@ function assistCard() {
     </div>`;
 }
 
-function renderHero() {
-  const st = D.stats, L = D.level;
-  const attrs = [
-    { name: '🫁 Endurance', v: clamp(D.programStep / PROGRAM_STEPS * 80 + st.totals.km / 5, 0, 100), c: 'var(--lime)' },
-    { name: '💪 Force', v: clamp(st.totals.strength * 4, 0, 100), c: 'var(--pink)' },
-    { name: '📅 Régularité', v: clamp(st.perfectWeeks * 6 + st.streak * 4, 0, 100), c: 'var(--orange)' },
-    { name: '🧠 Volonté', v: clamp(st.totals.sessions * 2 + st.weightsCount * 2, 0, 100), c: 'var(--violet)' },
-  ];
-  const unlocked = Object.keys(D.badges).length;
+// ---------- Outils d'affichage de l'étape 5 ----------
+const fmtSigned = (v, d = 1) => `${v > 0 ? '+' : v < 0 ? '−' : '±'}${fmtNum(Math.abs(v), d)}`;
+// Écart neutre : on montre la progression sans jamais culpabiliser
+const deltaChip = (v, unit = '', d = 1) => `<span class="chip ${v > 0 ? 'up' : ''}">${fmtSigned(v, d)}${unit}</span>`;
+const fmtHours = sec => fmtDuration(Math.round(sec / 60));
 
-  $('#view-hero').innerHTML = `
-    <div class="card glow avatar-card">
-      <div class="emblem">${L.n}<small>${L.title.toUpperCase()}</small></div>
-      <h1 style="margin-top:22px">${esc(data.profile.name || 'Héros')}</h1>
-      <div class="muted small">${fmtNum(D.xp, 0)} XP au total · ${unlocked}/${BADGES.length} succès</div>
-      <div class="bar" style="margin:16px 0 6px"><i style="width:${L.pct * 100}%"></i></div>
-      <div class="row between small muted"><span>Niv. ${L.n}</span><span>${L.next ? `${L.next.title} à ${L.next.xp} XP` : 'Niveau max'}</span></div>
-    </div>
-
-    <div class="section-title"><h2>Attributs</h2></div>
-    <div class="card">${attrs.map(a => `
-      <div class="attr"><div class="row"><span>${a.name}</span><b>${Math.round(a.v)}</b></div>
-      <div class="bar"><i style="width:${a.v}%;background:${a.c}"></i></div></div>`).join('')}
-    </div>
-
-    <div class="section-title"><h2>Succès</h2><span class="muted small">${unlocked}/${BADGES.length}</span></div>
-    <div class="badges">${BADGES.map(b => `
-      <div class="bdg ${D.badges[b.id] ? 'unlocked' : 'locked'}">
-        <div class="i">${b.icon}</div><b>${b.name}</b><div>${D.badges[b.id] ? `Débloqué le ${fmtDate(D.badges[b.id])}` : b.desc}</div>
-      </div>`).join('')}
-    </div>
-
-    <div class="section-title"><h2>Rangs</h2></div>
-    <div class="card" style="padding:10px"><div class="levels">${LEVELS.map((lv, i) => `
-      <div class="lv-row ${i + 1 < L.n ? 'reached' : i + 1 === L.n ? 'reached current' : 'locked'}">
-        <span class="n">${i + 1}</span><span>${lv.title}</span><span class="xp">${lv.xp} XP</span>
-      </div>`).join('')}</div>
-    </div>
-
-    <div class="section-title"><h2>Comment gagner de l'XP</h2></div>
-    <div class="card"><table class="rewards">
-      <tr><td>🚶 Marche de 30 min</td><td>+${XP.walk30}</td></tr>
-      <tr><td>🏃 Séance de course (≥ 10 min ou programme)</td><td>+${XP.run}</td></tr>
-      <tr><td>🏋️ Musculation (≥ 15 min)</td><td>+${XP.strength}</td></tr>
-      <tr><td>⏳ Séance plus courte</td><td>+${XP.walkMini} à +${XP.runShort}</td></tr>
-      <tr><td>📅 Objectif hebdo (3 jours actifs)</td><td>+${XP.weeklyGoal}</td></tr>
-      <tr><td>🏅 Nouveau record perso</td><td>+${XP.record}</td></tr>
-      <tr><td>⚖️ Pesée hebdomadaire</td><td>+${XP.weighIn}</td></tr>
-    </table>
-    <p class="small muted" style="margin:12px 0 0">L'XP récompense la régularité, pas la vitesse de perte de poids.</p></div>`;
+// Défis les plus proches d'être réussis. Un jour de récupération, aucun défi de course n'est mis en avant.
+function nextChallenges(n = 3) {
+  const coach = C.coachAdvice(data, D);
+  const resting = coach.kind === 'recovery' || coach.kind === 'rest';
+  return BADGES.filter(b => !D.badges[b.id] && !(resting && b.run))
+    .map(b => ({ b, ...C.badgeProgress(b, D.snap) }))
+    .filter(x => x.target > 0)
+    .sort((a, b) => b.value / b.target - a.value / a.target || a.target - b.target)
+    .slice(0, n);
 }
 
-function weightChart(st) {
+function challengeRow(x) {
+  const pct = clamp(x.value / x.target, 0, 1);
+  return `<div class="defi">
+    <div class="defi-ic">${x.b.icon}</div>
+    <div class="defi-main"><div class="row between"><b>${x.b.name}</b><span class="muted small">${fmtNum(Math.min(x.value, x.target))} / ${fmtNum(x.target)}</span></div>
+      <div class="small muted">${x.b.desc}</div>
+      <div class="bar" style="margin-top:6px"><i style="width:${pct * 100}%"></i></div></div>
+  </div>`;
+}
+
+// Diagramme en barres générique (semaines, mois, endurance)
+function barChart(items, { fmt = v => fmtNum(v), id = 'bar' } = {}) {
+  const W = 380, H = 170, pb = 24, pt = 18, n = items.length;
+  const max = Math.max(1, ...items.map(i => i.value));
+  const bw = W / n;
+  return `<svg viewBox="0 0 ${W} ${H}" role="img">
+    <defs><linearGradient id="${id}G" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#22d3ee"/><stop offset="1" stop-color="#8b5cf6"/></linearGradient></defs>
+    ${items.map((it, i) => {
+      const h = it.value / max * (H - pb - pt), x = i * bw + bw * 0.2, y = H - pb - h;
+      return `<rect x="${x}" y="${pt}" width="${bw * 0.6}" height="${H - pb - pt}" rx="8" fill="rgba(255,255,255,.04)"/>
+        <rect x="${x}" y="${y}" width="${bw * 0.6}" height="${Math.max(h, 0)}" rx="8" fill="url(#${id}G)" opacity="${it.current ? 1 : .75}"/>
+        ${it.value ? `<text x="${x + bw * 0.3}" y="${y - 5}" text-anchor="middle" style="fill:var(--text);font-weight:600">${fmt(it.value)}</text>` : ''}
+        <text x="${x + bw * 0.3}" y="${H - 6}" text-anchor="middle">${it.label}</text>`;
+    }).join('')}
+  </svg>`;
+}
+
+// Courbe de poids : pesées réelles, moyenne mobile 7 jours, trajectoire conseillée, objectifs.
+// Deux vues : les 8 dernières semaines (lisible sur iPhone) ou tout le défi.
+function weightChart(st, rep) {
   const p = data.profile, W = 380, H = 220, pl = 30, pr = 8, pt = 14, pb = 26;
+  const recent = ui.weightRange !== 'all';
+  const today = todayISO();
   const first = st.sortedW.length ? st.sortedW[0].date : p.startDate;
   const last = st.sortedW.length ? st.sortedW[st.sortedW.length - 1].date : p.endDate;
-  const x0 = Math.min(parseISO(p.startDate), parseISO(first));
-  const x1 = Math.max(+parseISO(p.endDate), +parseISO(last), x0 + DAY);
-  const vals = [p.startWeight, p.goalWeight, ...st.sortedW.map(w => w.kg)];
-  const yMin = Math.floor((Math.min(...vals) - 2) / 5) * 5, yMax = Math.ceil((Math.max(...vals) + 2) / 5) * 5;
-  const X = d => pl + (parseISO(d) - x0) / (x1 - x0) * (W - pl - pr);
+  let x0 = Math.min(parseISO(p.startDate), parseISO(first));
+  let x1 = Math.max(+parseISO(p.endDate), +parseISO(last), x0 + DAY);
+  if (recent) {
+    x0 = Math.max(x0, +parseISO(C.addDays(today, -56)));
+    x1 = Math.max(+parseISO(C.addDays(today, 7)), x0 + 7 * DAY);
+  }
+  const t0 = +parseISO(p.startDate), t1 = +parseISO(p.endDate);
+  // Trajectoire conseillée : ligne droite du poids de départ à l'objectif principal
+  const traj = t => p.startWeight + (p.goalWeight - p.startWeight) * clamp((t - t0) / (t1 - t0), 0, 1);
+  const visible = st.sortedW.filter(w => +parseISO(w.date) >= x0);
+  const vals = recent
+    ? [...visible.map(w => w.kg), ...rep.weight.movingAvg.filter(w => +parseISO(w.date) >= x0).map(w => w.kg), traj(x0), traj(x1), ...(visible.length ? [] : [st.current])]
+    : [p.startWeight, p.goalWeight, ...(p.bonusGoal ? [p.bonusGoal] : []), ...st.sortedW.map(w => w.kg)];
+  const span = Math.max(...vals) - Math.min(...vals);
+  const stepKg = recent && span < 8 ? 1 : 5;
+  const yMin = Math.floor((Math.min(...vals) - (recent ? 0.5 : 2)) / stepKg) * stepKg;
+  const yMax = Math.ceil((Math.max(...vals) + (recent ? 0.5 : 2)) / stepKg) * stepKg;
+  const X = d => pl + ((typeof d === 'number' ? d : +parseISO(d)) - x0) / (x1 - x0) * (W - pl - pr);
   const Y = v => pt + (yMax - v) / (yMax - yMin) * (H - pt - pb);
+  const inRange = v => v >= yMin && v <= yMax;
 
   let grid = '';
-  for (let v = yMin; v <= yMax; v += 5)
+  for (let v = yMin; v <= yMax; v += stepKg)
     grid += `<line x1="${pl}" x2="${W - pr}" y1="${Y(v)}" y2="${Y(v)}" stroke="rgba(255,255,255,.06)"/><text x="${pl - 8}" y="${Y(v) + 4}" text-anchor="end">${v}</text>`;
-  const months = [];
-  for (let d = new Date(x0), i = 0; d <= x1 && i < 14; d.setMonth(d.getMonth() + 1), i++) {
-    const m = new Date(d.getFullYear(), d.getMonth(), 1);
-    if (m >= x0) months.push(`<text x="${X(toISO(m))}" y="${H - 6}" text-anchor="middle">${m.toLocaleDateString('fr-FR', { month: 'short' }).replace('.', '')}</text>`);
+  const ticks = [];
+  if (recent) {
+    for (let k = weekKey(toISO(new Date(x0))); +parseISO(k) <= x1; k = shiftWeek(k, 2))
+      if (+parseISO(k) >= x0) ticks.push(`<text x="${X(k)}" y="${H - 6}" text-anchor="middle">${fmtDate(k).replace('.', '')}</text>`);
+  } else {
+    for (let d = new Date(x0), i = 0; d <= x1 && i < 14; d.setMonth(d.getMonth() + 1), i++) {
+      const m = new Date(d.getFullYear(), d.getMonth(), 1);
+      if (m >= x0) ticks.push(`<text x="${X(toISO(m))}" y="${H - 6}" text-anchor="middle">${m.toLocaleDateString('fr-FR', { month: 'short' }).replace('.', '')}</text>`);
+    }
   }
-  const goalY = Y(p.goalWeight);
-  let line = '', area = '', dots = '';
-  if (st.sortedW.length) {
-    const pts = st.sortedW.map(w => [X(w.date), Y(w.kg)]);
+  const goalLine = (kg, color, label, dy) => inRange(kg)
+    ? `<line x1="${pl}" x2="${W - pr}" y1="${Y(kg)}" y2="${Y(kg)}" stroke="${color}" stroke-dasharray="2 5" stroke-width="2" opacity=".85"/>
+       <text x="${W - pr}" y="${Y(kg) + dy}" text-anchor="end" style="fill:${color};font-weight:600">${label}</text>` : '';
+  let line = '', area = '', dots = '', avgLine = '';
+  const pts = st.sortedW.filter(w => +parseISO(w.date) >= x0).map(w => [X(w.date), Y(w.kg)]);
+  if (pts.length) {
     line = `<polyline points="${pts.map(q => q.join(',')).join(' ')}" fill="none" stroke="var(--lime)" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" style="filter:drop-shadow(0 0 6px rgba(198,255,61,.5))"/>`;
     area = `<polygon points="${pts[0][0]},${H - pb} ${pts.map(q => q.join(',')).join(' ')} ${pts[pts.length - 1][0]},${H - pb}" fill="url(#wArea)"/>`;
+    const avgPts = rep.weight.movingAvg.filter(w => +parseISO(w.date) >= x0);
+    if (avgPts.length > 1)
+      avgLine = `<polyline points="${avgPts.map(w => `${X(w.date)},${Y(w.kg)}`).join(' ')}" fill="none" stroke="var(--cyan)" stroke-width="2" stroke-dasharray="5 4" stroke-linejoin="round" opacity=".9"/>`;
     const lp = pts[pts.length - 1];
     dots = pts.map(q => `<circle cx="${q[0]}" cy="${q[1]}" r="3" fill="var(--lime)"/>`).join('') +
       `<circle cx="${lp[0]}" cy="${lp[1]}" r="7" fill="none" stroke="var(--lime)" stroke-width="2" opacity=".6"/>
        <text x="${Math.min(lp[0] + 10, W - 60)}" y="${lp[1] - 10}" style="fill:var(--text);font-weight:700">${fmtNum(st.current)} kg</text>`;
   }
+  const ta = Math.max(x0, t0), tb = Math.min(x1, t1);
   return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Courbe de poids">
     <defs><linearGradient id="wArea" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#c6ff3d" stop-opacity=".25"/><stop offset="1" stop-color="#c6ff3d" stop-opacity="0"/></linearGradient></defs>
-    ${grid}${months.join('')}
-    <line x1="${pl}" x2="${W - pr}" y1="${goalY}" y2="${goalY}" stroke="var(--violet)" stroke-dasharray="2 5" stroke-width="2"/>
-    <text x="${W - pr}" y="${goalY - 7}" text-anchor="end" style="fill:#c4b5fd;font-weight:600">Objectif ${fmtNum(p.goalWeight)} kg</text>
-    <line x1="${X(p.startDate)}" y1="${Y(p.startWeight)}" x2="${X(p.endDate)}" y2="${goalY}" stroke="rgba(255,255,255,.25)" stroke-dasharray="6 6" stroke-width="1.5"/>
-    ${area}${line}${dots}
-  </svg>`;
-}
-
-function kmChart() {
-  const W = 380, H = 170, pb = 24, pt = 18, n = 8;
-  const cur = weekKey(todayISO());
-  const weeks = Array.from({ length: n }, (_, i) => shiftWeek(cur, i - n + 1));
-  const km = weeks.map(k => D.sessions.filter(s => weekKey(s.date) === k).reduce((a, s) => a + s.km, 0));
-  const max = Math.max(5, ...km);
-  const bw = W / n;
-  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Kilomètres par semaine">
-    <defs><linearGradient id="kmG" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#22d3ee"/><stop offset="1" stop-color="#8b5cf6"/></linearGradient></defs>
-    ${weeks.map((k, i) => {
-      const h = km[i] / max * (H - pb - pt), x = i * bw + bw * 0.2, y = H - pb - h;
-      return `<rect x="${x}" y="${pt}" width="${bw * 0.6}" height="${H - pb - pt}" rx="8" fill="rgba(255,255,255,.04)"/>
-        <rect x="${x}" y="${y}" width="${bw * 0.6}" height="${Math.max(h, 0)}" rx="8" fill="url(#kmG)" opacity="${k === cur ? 1 : .75}"/>
-        ${km[i] ? `<text x="${x + bw * 0.3}" y="${y - 5}" text-anchor="middle" style="fill:var(--text);font-weight:600">${fmtNum(km[i])}</text>` : ''}
-        <text x="${x + bw * 0.3}" y="${H - 6}" text-anchor="middle">${k === cur ? 'En cours' : fmtDate(k).replace('.', '')}</text>`;
-    }).join('')}
+    ${grid}${ticks.join('')}
+    ${goalLine(p.goalWeight, '#c4b5fd', `Objectif ${fmtNum(p.goalWeight)} kg`, -7)}
+    ${p.bonusGoal ? goalLine(p.bonusGoal, '#ffc39b', `Bonus ${fmtNum(p.bonusGoal)} kg`, 14) : ''}
+    ${tb > ta ? `<line x1="${X(ta)}" y1="${Y(traj(ta))}" x2="${X(tb)}" y2="${Y(traj(tb))}" stroke="rgba(255,255,255,.25)" stroke-dasharray="6 6" stroke-width="1.5"/>` : ''}
+    ${area}${avgLine}${line}${dots}
   </svg>`;
 }
 
@@ -536,8 +540,116 @@ function weightList(st) {
   ${rows.length > 5 ? `<button class="w-more" data-action="toggle-weights">${ui.showAllWeights ? 'Réduire' : `Voir les ${rows.length} pesées`}</button>` : ''}</div>`;
 }
 
+// ---------- Écran Perso : personnage, défis, succès, titres, exploits, XP ----------
+function renderHero() {
+  const st = D.stats, L = D.level;
+  const attrs = [
+    { name: '🫁 Endurance', v: clamp(D.programStep / PROGRAM_STEPS * 80 + st.totals.km / 5, 0, 100), c: 'var(--lime)' },
+    { name: '💪 Force', v: clamp(st.totals.strength * 4, 0, 100), c: 'var(--pink)' },
+    { name: '📅 Régularité', v: clamp(st.perfectWeeks * 6 + st.streak * 4, 0, 100), c: 'var(--orange)' },
+    { name: '🧠 Volonté', v: clamp(st.totals.sessions * 2 + st.weightsCount * 2, 0, 100), c: 'var(--violet)' },
+  ];
+  const unlocked = Object.keys(D.badges).length;
+  const reward = C.REWARDS[L.n - 1], nextReward = L.next ? C.REWARDS[L.n] : null;
+  const challenges = nextChallenges(3);
+
+  // Journal des exploits : niveaux, succès et records, du plus récent au plus ancien
+  const exploits = [
+    ...Object.entries(D.levelDates).map(([n, date]) => ({ date, icon: C.REWARDS[n - 1].icon, text: `Niveau ${n} : ${LEVELS[n - 1].title}`, sub: `Récompense : ${C.REWARDS[n - 1].name}` })),
+    ...BADGES.filter(b => D.badges[b.id]).map(b => ({ date: D.badges[b.id], icon: b.icon, text: `Succès : ${b.name}`, sub: b.desc })),
+    ...D.ledger.filter(e => /^r[dr]:/.test(e.key)).map(e => ({ date: e.date, icon: '🏅', text: e.label.replace('🏅 ', ''), sub: `+${e.amount} XP` })),
+  ].sort((a, b) => b.date.localeCompare(a.date));
+  const shownEx = ui.showAllExploits ? exploits : exploits.slice(0, 8);
+  const xpRows = [...D.ledger].reverse();
+  const shownXp = ui.showAllXp ? xpRows : xpRows.slice(0, 10);
+
+  $('#view-hero').innerHTML = `
+    <div class="card glow avatar-card">
+      <div class="emblem">${L.n}<small>${L.title.toUpperCase()}</small><span class="emblem-reward" title="${esc(reward.name)}">${reward.icon}</span></div>
+      <h1 style="margin-top:22px">${esc(data.profile.name || 'Héros')}</h1>
+      <div class="muted small">Titre : <b style="color:var(--text)">${L.title}</b> · ${reward.icon} ${reward.name}</div>
+      <div class="bar" style="margin:16px 0 6px"><i style="width:${L.pct * 100}%"></i></div>
+      <div class="row between small muted"><span>${fmtNum(D.xp, 0)} XP${L.next ? ` / ${fmtNum(L.next.xp, 0)}` : ''}</span>
+        <span>${L.next ? `encore ${fmtNum(L.next.xp - D.xp, 0)} XP → ${nextReward.icon} ${L.next.title}` : 'Niveau maximum'}</span></div>
+      <div class="muted small" style="margin-top:8px">${unlocked}/${BADGES.length} succès débloqués</div>
+    </div>
+
+    <div class="section-title"><h2>Prochains défis</h2><span class="muted small">les plus proches</span></div>
+    <div class="card">${challenges.length ? challenges.map(challengeRow).join('') : '<p class="small muted" style="margin:0">Tous les défis disponibles sont réussis. Incroyable !</p>'}
+      <p class="small muted" style="margin:10px 0 0">Les défis de course ne sont pas proposés les jours de récupération : le repos fait partie du jeu.</p>
+    </div>
+
+    <div class="section-title"><h2>Attributs</h2></div>
+    <div class="card">${attrs.map(a => `
+      <div class="attr"><div class="row"><span>${a.name}</span><b>${Math.round(a.v)}</b></div>
+      <div class="bar"><i style="width:${a.v}%;background:${a.c}"></i></div></div>`).join('')}
+    </div>
+
+    <div class="section-title"><h2>Succès</h2><span class="muted small">${unlocked}/${BADGES.length}</span></div>
+    ${Object.entries(C.BADGE_CATS).map(([cat, title]) => {
+      const list = BADGES.filter(b => b.cat === cat);
+      const got = list.filter(b => D.badges[b.id]).length;
+      return `<div class="cat-title"><span>${title}</span><span class="muted small">${got}/${list.length}</span></div>
+      <div class="badges">${list.map(b => {
+        const done = D.badges[b.id], pr = C.badgeProgress(b, D.snap);
+        return `<div class="bdg ${done ? 'unlocked' : 'locked'}">
+          <div class="i">${b.icon}</div><b>${b.name}</b>
+          <div class="bdg-d">${done ? `Débloqué le ${fmtDate(done)}` : b.desc}</div>
+          ${!done && pr.target > 0 ? `<div class="mini-bar"><i style="width:${clamp(pr.value / pr.target, 0, 1) * 100}%"></i></div>` : ''}
+        </div>`;
+      }).join('')}</div>`;
+    }).join('')}
+
+    <div class="section-title"><h2>Titres et récompenses</h2></div>
+    <div class="card" style="padding:10px"><div class="levels">${LEVELS.map((lv, i) => {
+      const n = i + 1, got = n <= L.n, date = n === 1 ? null : D.levelDates[n];
+      return `<div class="lv-row ${n < L.n ? 'reached' : n === L.n ? 'reached current' : 'locked'}">
+        <span class="n">${n}</span>
+        <span class="lv-txt"><b>${lv.title}</b><span class="small muted">${C.REWARDS[i].icon} ${C.REWARDS[i].name}</span></span>
+        <span class="xp">${got ? (date ? fmtDate(date) : 'Départ') : `${fmtNum(lv.xp, 0)} XP`}</span>
+      </div>`;
+    }).join('')}</div></div>
+
+    <div class="section-title"><h2>Journal des exploits</h2><span class="muted small">${exploits.length}</span></div>
+    <div class="card" style="padding:8px 12px">${exploits.length ? shownEx.map(e => `
+      <div class="ex-row"><span class="ex-ic">${e.icon}</span><span class="ex-main"><b>${esc(e.text)}</b><span class="small muted">${esc(e.sub)}</span></span><span class="small muted">${fmtDate(e.date)}</span></div>`).join('')
+      : '<p class="small muted">Tes exploits apparaîtront ici dès ta première séance.</p>'}
+      ${exploits.length > 8 ? `<button class="w-more" data-action="toggle-exploits">${ui.showAllExploits ? 'Réduire' : `Voir les ${exploits.length} exploits`}</button>` : ''}
+    </div>
+
+    <div class="section-title"><h2>Historique des XP</h2><span class="muted small">${fmtNum(D.xp, 0)} XP</span></div>
+    <div class="card" style="padding:8px 12px">${xpRows.length ? shownXp.map(e => `
+      <div class="ex-row"><span class="ex-main"><b>${esc(e.label)}</b><span class="small muted">${fmtDate(e.date)} · total ${fmtNum(e.total, 0)} XP</span></span><span class="badge-xp lime">+${e.amount}</span></div>`).join('')
+      : '<p class="small muted">Aucun gain d\'XP pour l\'instant.</p>'}
+      ${xpRows.length > 10 ? `<button class="w-more" data-action="toggle-xp">${ui.showAllXp ? 'Réduire' : `Voir les ${xpRows.length} gains`}</button>` : ''}
+    </div>
+
+    <div class="section-title"><h2>Comment gagner de l'XP</h2></div>
+    <div class="card"><table class="rewards">
+      <tr><td>🚶 Marche de 30 min</td><td>+${XP.walk30}</td></tr>
+      <tr><td>🏃 Séance de course (≥ 10 min ou programme)</td><td>+${XP.run}</td></tr>
+      <tr><td>🏋️ Musculation (≥ 15 min)</td><td>+${XP.strength}</td></tr>
+      <tr><td>⏳ Séance plus courte</td><td>+${XP.walkMini} à +${XP.runShort}</td></tr>
+      <tr><td>📅 Objectif hebdo (3 jours actifs)</td><td>+${XP.weeklyGoal}</td></tr>
+      <tr><td>🏅 Nouveau record perso (mesuré)</td><td>+${XP.record}</td></tr>
+      <tr><td>⚖️ Pesée hebdomadaire</td><td>+${XP.weighIn}</td></tr>
+    </table>
+    <p class="small muted" style="margin:12px 0 0">L'XP récompense la régularité, pas la vitesse de perte de poids. Les succès sont des récompenses symboliques : ils ne rapportent pas d'XP en plus.</p></div>`;
+}
+
+// ---------- Écran Statistiques ----------
+const PERIOD_LABEL = { week: 'Semaines', month: 'Mois' };
+const METRIC = {
+  km: { label: 'Distance', get: b => b.km, fmt: v => fmtNum(v) },
+  minutes: { label: 'Durée', get: b => b.minutes, fmt: v => `${Math.round(v)}'` },
+  days: { label: 'Jours actifs', get: b => b.days, fmt: v => fmtNum(v, 0) },
+};
+const monthLabel = key => { const [y, m] = key.split('-').map(Number); return new Date(y, m - 1, 1).toLocaleDateString('fr-FR', { month: 'short' }).replace('.', ''); };
+
 function renderStats() {
   const st = D.stats, p = data.profile;
+  const rep = C.statsReport(data, D);
+  const T = rep.totals, ty = rep.types;
   // Carte de régularité : une case par semaine du défi
   const startW = weekKey(p.startDate), endW = weekKey(p.endDate), nowW = weekKey(todayISO());
   let heat = '';
@@ -545,6 +657,27 @@ function renderStats() {
     const c = st.byWeek[k] || 0;
     heat += `<i class="${k > nowW ? 'future' : `l${Math.min(c, 3)}`} ${k === nowW ? 'now' : ''}" title="Semaine du ${fmtDate(k)} : ${c} jour(s) d'entraînement"></i>`;
   }
+  // Évolution : semaines ou mois, distance / durée / jours actifs
+  const metric = METRIC[ui.statsMetric] || METRIC.km;
+  const buckets = ui.statsPeriod === 'month' ? rep.months : rep.weeks;
+  const evoItems = buckets.map((b, i) => ({
+    label: ui.statsPeriod === 'month' ? monthLabel(b.key) : i === buckets.length - 1 ? 'En cours' : fmtDate(b.key).replace('.', ''),
+    value: metric.get(b), current: i === buckets.length - 1,
+  }));
+  const seg = (action, value, current, label) => `<button class="seg-btn ${value === current ? 'on' : ''}" data-action="${action}" data-v="${value}">${label}</button>`;
+  // Séances par type
+  const typeRows = [
+    ['📋', 'Programme', ty.programme, ty.programme ? `${ty.programmeValides} validée${ty.programmeValides > 1 ? 's' : ''} ou déclarée${ty.programmeValides > 1 ? 's' : ''}` : ''],
+    ['🏃', 'Course libre', ty.courseLibre, 'mesurée au chrono'],
+    ['🚶', 'Marche libre', ty.marcheLibre, 'mesurée au chrono'],
+    ['✍️', 'Course saisie', ty.courseManuelle, 'sans chrono'],
+    ['✍️', 'Marche saisie', ty.marcheManuelle, 'sans chrono'],
+    ['🏋️', 'Musculation', ty.muscu, ''],
+  ];
+  const typeMax = Math.max(1, ...typeRows.map(r => r[2]));
+  const cmpLabels = { km: ['Distance', v => `${fmtNum(v)} km`], minutes: ['Durée', v => fmtDuration(v)], days: ['Jours actifs', v => fmtNum(v, 0)], sessions: ['Séances', v => fmtNum(v, 0)] };
+  const enduranceItems = rep.weeks.map((w, i) => ({ label: i === rep.weeks.length - 1 ? 'En cours' : fmtDate(w.key).replace('.', ''), value: Math.round(w.runSec / 60), current: i === rep.weeks.length - 1 }));
+  const wc = rep.weight.weekChange, mc = rep.weight.monthChange;
 
   $('#view-stats').innerHTML = `
     <div class="eyebrow">Tableau de bord</div>
@@ -552,16 +685,65 @@ function renderStats() {
     <p class="quote">Les chiffres ne mentent pas : chaque barre, c'est toi.</p>
 
     <div class="grid-2">
-      <div class="tile"><div class="ic">👣</div><div class="v">${fmtNum(st.totals.km)}<small> km</small></div><div class="l">Distance totale</div></div>
-      <div class="tile"><div class="ic">⏱️</div><div class="v">${fmtDuration(st.totals.minutes)}</div><div class="l">Temps d'effort</div></div>
-      <div class="tile"><div class="ic">🔥</div><div class="v">${st.totals.sessions}</div><div class="l">Séances réalisées</div></div>
-      <div class="tile"><div class="ic">🏅</div><div class="v">${fmtNum(D.records.maxRun)}<small> min</small></div><div class="l">Record course continue</div></div>
+      <div class="tile"><div class="ic">👣</div><div class="v">${fmtNum(T.km)}<small> km</small></div><div class="l">Distance totale</div>
+        <div class="tile-sub">${T.kmMeasured ? `${fmtNum(T.kmMeasured)} km mesurés · ` : ''}${fmtNum(T.kmManual)} km saisis</div></div>
+      <div class="tile"><div class="ic">⏱️</div><div class="v">${fmtDuration(T.minutes)}</div><div class="l">Durée d'activité</div>
+        <div class="tile-sub">${T.activeDays} jour${T.activeDays > 1 ? 's' : ''} actif${T.activeDays > 1 ? 's' : ''}</div></div>
+      <div class="tile"><div class="ic">🔥</div><div class="v">${T.sessions}</div><div class="l">Séances réalisées</div>
+        <div class="tile-sub">${T.timedSessions} au chrono</div></div>
+      <div class="tile"><div class="ic">🏅</div><div class="v">${fmtNum(D.records.maxRun)}<small> min</small></div><div class="l">Record course continue</div>
+        <div class="tile-sub">⏱️ mesuré au chrono</div></div>
     </div>
 
-    <div class="section-title"><h2>Courbe de poids</h2><span class="muted small">--- trajectoire conseillée</span></div>
+    <div class="section-title"><h2>Temps mesuré au chrono</h2></div>
+    <div class="card">
+      <div class="grid-2">
+        <div><div class="eyebrow">🏃 Course</div><div class="session-desc" style="margin:4px 0 0;color:var(--lime)">${fmtHours(T.runSec)}</div></div>
+        <div><div class="eyebrow">🚶 Marche</div><div class="session-desc" style="margin:4px 0 0;color:var(--cyan)">${fmtHours(T.walkSec)}</div></div>
+      </div>
+      <p class="small muted" style="margin:10px 0 0">Seules les séances chronométrées comptent ici. Les séances saisies à la main ne détaillent pas la course et la marche.</p>
+    </div>
+
+    <div class="section-title"><h2>Cette semaine</h2><span class="muted small">vs semaine dernière</span></div>
+    <div class="card" style="padding:8px 14px">${rep.compare.map(c => `
+      <div class="cmp-row"><span>${cmpLabels[c.key][0]}</span><b>${cmpLabels[c.key][1](c.now)}</b>${deltaChip(c.diff, c.key === 'km' ? ' km' : c.key === 'minutes' ? ' min' : '', c.key === 'km' ? 1 : 0)}</div>`).join('')}
+    </div>
+
+    <div class="section-title"><h2>Évolution</h2></div>
     <div class="card chart">
-      ${weightChart(st)}
-      ${st.sortedW.length ? '' : '<p class="small muted" style="margin:8px 0 0">Ajoute ta première pesée pour voir ta courbe apparaître.</p>'}
+      <div class="seg-mini">${seg('stats-period', 'week', ui.statsPeriod, 'Semaines')}${seg('stats-period', 'month', ui.statsPeriod, 'Mois')}</div>
+      <div class="seg-mini">${Object.entries(METRIC).map(([k, m]) => seg('stats-metric', k, ui.statsMetric, m.label)).join('')}</div>
+      ${barChart(evoItems, { fmt: metric.fmt, id: 'evo' })}
+    </div>
+
+    <div class="section-title"><h2>Séances par type</h2></div>
+    <div class="card">${typeRows.map(([ic, label, n, sub]) => `
+      <div class="type-row ${n ? '' : 'zero'}"><div class="row between"><span>${ic} ${label}</span><b>${n}</b></div>
+        <div class="bar"><i style="width:${n / typeMax * 100}%"></i></div>${sub && n ? `<div class="small muted">${sub}</div>` : ''}</div>`).join('')}
+    </div>
+
+    <div class="section-title"><h2>Records personnels</h2></div>
+    <div class="card" style="padding:8px 14px">${rep.records.length ? rep.records.map(r => `
+      <div class="rec-row"><span class="ex-ic">${r.icon}</span>
+        <span class="ex-main"><b>${r.label}</b><span class="small muted">${r.week ? `semaine du ${fmtDate(r.date)}` : fmtDate(r.date)} · <span class="tag ${r.measured ? 'measured' : ''}">${r.week ? '📅 cumul' : r.measured ? '⏱️ mesuré' : '✍️ saisi'}</span></span></span>
+        <b class="rec-v">${fmtNum(r.value)} ${r.unit}</b></div>`).join('')
+      : '<p class="small muted">Tes records apparaîtront après tes premières séances.</p>'}
+    </div>
+
+    <div class="section-title"><h2>Endurance</h2><span class="muted small">course mesurée / semaine</span></div>
+    <div class="card chart">
+      ${barChart(enduranceItems, { fmt: v => `${v}'`, id: 'endu' })}
+      <p class="small muted" style="margin:8px 0 0">Minutes de course mesurées au chrono (programme et course libre). Plus longue course sans pause : <b style="color:var(--text)">${fmtNum(D.records.maxRun)} min</b>.</p>
+    </div>
+
+    <div class="section-title"><h2>Courbe de poids</h2><span class="muted small">pesées saisies</span></div>
+    <div class="card chart">
+      <div class="seg-mini">${seg('weight-range', 'recent', ui.weightRange, '8 dernières semaines')}${seg('weight-range', 'all', ui.weightRange, 'Tout le défi')}</div>
+      ${weightChart(st, rep)}
+      <div class="legend" style="margin-top:8px;flex-wrap:wrap"><span><i style="background:var(--lime)"></i>Pesées</span><span><i style="background:var(--cyan)"></i>Moyenne 7 j</span><span><i style="background:rgba(255,255,255,.3)"></i>Trajectoire conseillée</span></div>
+      ${st.sortedW.length ? `<div class="cmp-row" style="margin-top:6px"><span>Cette semaine</span>${wc ? deltaChip(wc.diff, ' kg') : '<span class="muted small">pas de pesée la semaine précédente</span>'}</div>
+        <div class="cmp-row"><span>Ce mois-ci</span>${mc ? deltaChip(mc.diff, ' kg') : '<span class="muted small">pas de pesée le mois précédent</span>'}</div>`
+        : '<p class="small muted" style="margin:8px 0 0">Ajoute ta première pesée pour voir ta courbe apparaître.</p>'}
       <form id="weightForm" style="margin-top:14px">
         <div class="grid-2">
           <label class="f">Poids (kg)<input id="wKg" type="text" inputmode="decimal" autocomplete="off" placeholder="${fmtNum(st.current)}" required></label>
@@ -572,9 +754,6 @@ function renderStats() {
       ${weightList(st)}
     </div>
 
-    <div class="section-title"><h2>Kilomètres par semaine</h2></div>
-    <div class="card chart">${kmChart()}</div>
-
     <div class="section-title"><h2>Régularité</h2><span class="muted small">${st.perfectWeeks} semaine${st.perfectWeeks > 1 ? 's' : ''} parfaite${st.perfectWeeks > 1 ? 's' : ''}</span></div>
     <div class="card">
       <div class="heat">${heat}</div>
@@ -582,8 +761,21 @@ function renderStats() {
     </div>`;
 }
 
+// ---------- Écran Objectifs ----------
+function goalCard(g, color) {
+  return `<div class="card ${g.label === 'Objectif principal' ? 'glow' : ''}">
+    <div class="row between">
+      <div><div class="eyebrow">${g.label}</div><div class="session-desc" style="margin:4px 0">${fmtNum(g.target)} kg</div></div>
+      <div style="text-align:right"><div class="eyebrow">${g.reached ? 'Atteint 🎉' : 'Reste'}</div><div class="session-desc" style="margin:4px 0;color:${color}">${g.reached ? '✓' : `${fmtNum(g.left)} kg`}</div></div>
+    </div>
+    <div class="bar thick ${color === 'var(--lime)' ? 'lime' : ''}" style="margin:8px 0"><i style="width:${g.pct * 100}%;${color !== 'var(--lime)' ? `background:${color}` : ''}"></i></div>
+    <div class="row between small muted"><span>${fmtNum(g.done)} / ${fmtNum(g.total)} kg perdus</span><span>${Math.round(g.pct * 100)} %</span></div>
+  </div>`;
+}
+
 function renderGoals() {
   const p = data.profile, st = D.stats;
+  const rep = C.statsReport(data, D);
   const totalDays = daysBetween(p.startDate, p.endDate);
   const weeks = totalDays / 7;
   const pace = st.goalTotal / weeks;
@@ -592,6 +784,7 @@ function renderGoals() {
   const steps = [0.25, 0.5, 0.75, 1].map(f => Math.round(st.goalTotal * f * 2) / 2).filter((v, i, a) => v > 0 && a.indexOf(v) === i);
   const bk = readBackup();
   const reasons = { import: 'avant import', migration: 'avant conversion', reset: 'avant remise à zéro', restore: 'avant restauration' };
+  const [main, bonus] = rep.weight.goals;
 
   $('#view-goals').innerHTML = `
     <div class="eyebrow">Mission principale</div>
@@ -609,6 +802,10 @@ function renderGoals() {
       <p class="small muted" style="margin:14px 0 0">Rythme sain visé : environ <b style="color:var(--text)">${fmtNum(pace)} kg / semaine</b>, soit ${fmtNum(st.goalTotal)} kg en ${Math.round(weeks)} semaines. Pas besoin d'aller plus vite.</p>
     </div>
 
+    ${main ? goalCard(main, 'var(--lime)') : ''}
+    ${bonus ? goalCard(bonus, 'var(--orange)')
+      : '<div class="card"><p class="small muted" style="margin:0">🌟 Envie d\'aller plus loin ? Ajoute un <b style="color:var(--text)">objectif bonus</b> dans ton profil, plus bas. Il viendra après l\'objectif principal, sans changer le rythme conseillé.</p></div>'}
+
     <div class="section-title"><h2>Paliers</h2></div>
     <div class="card" style="padding:10px"><div class="levels">${steps.map(kg => {
       const hit = st.maxLost >= kg;
@@ -616,7 +813,9 @@ function renderGoals() {
       return `<div class="lv-row ${hit ? 'reached current' : ''}">
         <span class="n">${hit ? '✓' : '🎯'}</span><span><b>−${fmtNum(kg)} kg</b> <span class="muted small">· ${fmtNum(p.startWeight - kg)} kg</span></span>
         <span class="xp">${hit ? 'Atteint !' : `vers le ${fmtDate(toISO(target))}`}</span></div>`;
-    }).join('')}</div></div>
+    }).join('')}
+    ${bonus ? `<div class="lv-row ${bonus.reached ? 'reached current' : ''}"><span class="n">${bonus.reached ? '✓' : '🌟'}</span><span><b>Bonus −${fmtNum(bonus.total)} kg</b> <span class="muted small">· ${fmtNum(bonus.target)} kg</span></span><span class="xp">${bonus.reached ? 'Atteint !' : 'après l\'objectif'}</span></div>` : ''}
+    </div></div>
 
     <div class="section-title"><h2>Mon profil</h2></div>
     <form class="card" id="profileForm">
@@ -625,7 +824,7 @@ function renderGoals() {
         <label class="f">Poids de départ (kg)<input name="startWeight" type="text" inputmode="decimal" autocomplete="off" value="${p.startWeight}" required></label>
         <label class="f">Objectif (kg)<input name="goalWeight" type="text" inputmode="decimal" autocomplete="off" value="${p.goalWeight}" required></label>
         <label class="f">Taille (cm)<input name="height" type="number" min="${LIMITS.height[0]}" max="${LIMITS.height[1]}" value="${p.height || ''}" placeholder="optionnel"></label>
-        <span></span>
+        <label class="f">Objectif bonus (kg)<input name="bonusGoal" type="text" inputmode="decimal" autocomplete="off" value="${p.bonusGoal || ''}" placeholder="optionnel"></label>
         <label class="f">Début du défi<input name="startDate" type="date" value="${p.startDate}" required></label>
         <label class="f">Échéance<input name="endDate" type="date" value="${p.endDate}" required></label>
       </div>
@@ -1680,6 +1879,11 @@ document.addEventListener('click', e => {
     }
     case 'del-weight': return deleteWeight(a.dataset.date);
     case 'toggle-weights': ui.showAllWeights = !ui.showAllWeights; return renderStats();
+    case 'toggle-exploits': ui.showAllExploits = !ui.showAllExploits; return renderHero();
+    case 'toggle-xp': ui.showAllXp = !ui.showAllXp; return renderHero();
+    case 'stats-period': ui.statsPeriod = a.dataset.v; return renderStats();
+    case 'stats-metric': ui.statsMetric = a.dataset.v; return renderStats();
+    case 'weight-range': ui.weightRange = a.dataset.v; return renderStats();
     case 'export': return exportData();
     case 'import': return $('#importFile').click();
     case 'restore': return restoreBackup();
@@ -1716,6 +1920,7 @@ document.addEventListener('submit', e => {
     const profile = {
       name: f.pname.value.replace(/[<>]/g, '').trim().slice(0, 20),
       startWeight: Math.round(parseDec(f.startWeight.value) * 10) / 10, goalWeight: Math.round(parseDec(f.goalWeight.value) * 10) / 10,
+      bonusGoal: f.bonusGoal.value.trim() ? Math.round(parseDec(f.bonusGoal.value) * 10) / 10 : null,
       height: Math.round(parseFloat(f.height.value)) || null,
       startDate: f.startDate.value, endDate: f.endDate.value,
     };

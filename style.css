@@ -431,3 +431,37 @@ label.f input[type=range] { padding: 0; min-height: 0; height: 28px; border: 0; 
 .quick.two { grid-template-columns: 1fr 1fr; }
 .quick.two button { padding: 16px 8px; font-size: 14px; }
 .quick.two button span { font-size: 28px; }
+
+/* ---------- Statistiques avancées et progression RPG (étape 5) ---------- */
+.tile-sub { font-size: 11px; color: var(--muted); margin-top: 6px; line-height: 1.35; }
+.chip { display: inline-block; margin-left: 8px; padding: 2px 8px; border-radius: 99px; font-size: 12px; font-weight: 700; background: rgba(255,255,255,.07); color: var(--muted); white-space: nowrap; }
+.chip.up { background: rgba(198,255,61,.14); color: var(--lime); }
+.cmp-row { display: flex; align-items: center; gap: 6px; padding: 9px 0; border-bottom: 1px solid var(--border); font-size: 14px; }
+.cmp-row:last-child { border-bottom: 0; }
+.cmp-row > span:first-child { flex: 1; color: var(--muted); }
+.seg-mini { display: flex; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
+.seg-btn { padding: 7px 12px; border-radius: 99px; font-size: 12px; font-weight: 600; background: rgba(255,255,255,.05); border: 1px solid var(--border); color: var(--muted); }
+.seg-btn.on { background: rgba(198,255,61,.14); border-color: var(--lime); color: var(--lime); }
+.type-row { margin-bottom: 12px; font-size: 14px; }
+.type-row:last-child { margin-bottom: 0; }
+.type-row .bar { margin: 6px 0 4px; height: 6px; }
+.type-row.zero { opacity: .45; }
+.rec-row, .ex-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.rec-row:last-child, .ex-row:last-of-type { border-bottom: 0; }
+.ex-ic { width: 34px; height: 34px; flex: none; border-radius: 10px; display: grid; place-items: center; font-size: 17px; background: rgba(255,255,255,.05); }
+.ex-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; font-size: 14px; }
+.rec-v { font-family: var(--display); white-space: nowrap; }
+.tag { font-size: 11px; font-weight: 600; }
+.tag.measured { color: var(--lime); }
+.defi { display: flex; gap: 12px; align-items: flex-start; padding: 8px 0; }
+.defi + .defi { border-top: 1px solid var(--border); }
+.defi-ic { width: 40px; height: 40px; flex: none; border-radius: 12px; display: grid; place-items: center; font-size: 20px; background: rgba(139,92,246,.14); }
+.defi-main { flex: 1; min-width: 0; font-size: 14px; }
+.defi-main .bar { height: 6px; }
+.cat-title { display: flex; justify-content: space-between; align-items: baseline; margin: 16px 2px 8px; font-size: 13px; font-weight: 700; }
+.bdg .mini-bar { height: 4px; border-radius: 9px; background: rgba(255,255,255,.08); margin: 8px 6px 0; overflow: hidden; }
+.bdg .mini-bar i { display: block; height: 100%; background: linear-gradient(90deg, var(--violet), var(--cyan)); }
+.emblem-reward { position: absolute; top: -10px; right: -10px; width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; font-size: 20px; background: var(--bg); border: 1px solid var(--border); box-shadow: 0 0 16px rgba(139,92,246,.4); }
+.lv-txt { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.link-btn { color: var(--cyan); font-size: 12px; font-weight: 600; padding: 4px 0; }
+.bdg .bdg-d { font-size: 10px; color: var(--muted); margin-top: 3px; line-height: 1.3; }

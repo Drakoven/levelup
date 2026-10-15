@@ -68,28 +68,78 @@
   const WARMUP = 5, COOLDOWN = 5;
   const PROGRAM_STEPS = PROGRAM.length * 3;
 
-  // Succès. Chaque test reçoit un "instantané" des performances cumulées.
-  // Ils sont évalués dans l'ordre chronologique : la date de déblocage est
-  // celle de la saisie qui a réellement permis l'exploit.
+  // Succès et défis. Chacun mesure une valeur (metric) à comparer à un objectif (target),
+  // ce qui permet d'afficher la progression des défis pas encore réussis.
+  // Ils sont évalués dans l'ordre chronologique : la date de déblocage est celle de la
+  // saisie qui a réellement permis l'exploit. Ils ne rapportent PAS d'XP (pas de doublon) :
+  // ce sont des récompenses symboliques.
+  //   run: true → défi qui demande de courir (jamais mis en avant un jour de récupération)
+  const BADGE_CATS = {
+    seances: '🏁 Séances', marche: '🚶 Marche', distance: '🛣️ Distance cumulée', course: '🏃 Course mesurée',
+    regularite: '📅 Régularité', recup: '🧘 Récupération', poids: '⚖️ Poids',
+  };
+  const B = (id, cat, icon, name, desc, metric, target, extra = {}) => ({ id, cat, icon, name, desc, metric, target, ...extra });
   const BADGES = [
-    { id: 'first', icon: '🚀', name: 'Premier pas', desc: '1ère séance validée', test: s => s.sessions >= 1 },
-    { id: 'weigh', icon: '⚖️', name: 'Point zéro', desc: '1ère pesée', test: s => s.weights >= 1 },
-    { id: 'week', icon: '📅', name: 'Semaine parfaite', desc: '3 jours d\'entraînement en 1 semaine', test: s => s.perfectWeeks >= 1 },
-    { id: 'streak4', icon: '🔥', name: 'Machine', desc: '4 semaines parfaites d\'affilée', test: s => s.bestStreak >= 4 },
-    { id: 's10', icon: '💪', name: 'Régulier', desc: '10 séances', test: s => s.sessions >= 10 },
-    { id: 's25', icon: '⚡', name: 'Discipliné', desc: '25 séances', test: s => s.sessions >= 25 },
-    { id: 's50', icon: '🏆', name: 'Inarrêtable', desc: '50 séances', test: s => s.sessions >= 50 },
-    { id: 'km10', icon: '👟', name: '10 bornes', desc: '10 km cumulés', test: s => s.km >= 10 },
-    { id: 'km50', icon: '🛣️', name: 'Voyageur', desc: '50 km cumulés', test: s => s.km >= 50 },
-    { id: 'km100', icon: '🌍', name: 'Centurion', desc: '100 km cumulés', test: s => s.km >= 100 },
-    { id: 'run10', icon: '⏱️', name: '10 min non-stop', desc: 'Courir 10 min sans t\'arrêter', test: s => s.maxRun >= 10 },
-    { id: 'run30', icon: '🥇', name: '30 min non-stop', desc: 'Courir 30 min sans t\'arrêter', test: s => s.maxRun >= 30 },
-    // Paliers de poids : relatifs à l'objectif, basés sur le meilleur résultat atteint
-    { id: 'kg1', icon: '🌱', name: 'Premier kilo', desc: '−1 kg', test: s => s.maxLost >= 1 },
-    { id: 'q25', icon: '🎯', name: 'Premier quart', desc: '25 % de l\'objectif', test: s => s.goalTotal > 0 && s.maxLost >= s.goalTotal * 0.25 },
-    { id: 'q50', icon: '💎', name: 'Mi-parcours', desc: '50 % de l\'objectif', test: s => s.goalTotal > 0 && s.maxLost >= s.goalTotal * 0.5 },
-    { id: 'q75', icon: '🚀', name: 'Dernière ligne droite', desc: '75 % de l\'objectif', test: s => s.goalTotal > 0 && s.maxLost >= s.goalTotal * 0.75 },
-    { id: 'goal', icon: '👑', name: 'Mission accomplie', desc: 'Objectif atteint', test: s => s.goalTotal > 0 && s.maxLost >= s.goalTotal },
+    // Séances
+    B('first', 'seances', '🚀', 'Premier pas', '1ère séance', s => s.sessions, 1),
+    B('freewalk1', 'seances', '🚶', 'Pas libres', '1ère marche libre au chrono', s => s.freeWalks, 1),
+    B('free1', 'seances', '🏃', 'Esprit libre', '1ère course libre au chrono', s => s.freeRuns, 1, { run: true }),
+    B('s10', 'seances', '💪', 'Régulier', '10 séances', s => s.sessions, 10),
+    B('s25', 'seances', '⚡', 'Discipliné', '25 séances', s => s.sessions, 25),
+    B('s50', 'seances', '🏆', 'Inarrêtable', '50 séances', s => s.sessions, 50),
+    // Marche : valorisée autant que la course
+    B('walk5', 'marche', '🥾', 'Promeneur', '5 marches', s => s.walks, 5),
+    B('walk20', 'marche', '🌳', 'Randonneur', '20 marches', s => s.walks, 20),
+    B('walkkm10', 'marche', '🗺️', '10 km à pied', '10 km de marche cumulés', s => s.walkKm, 10),
+    B('walkkm50', 'marche', '🏞️', 'Grand marcheur', '50 km de marche cumulés', s => s.walkKm, 50),
+    // Distance cumulée (marche + course)
+    B('km1', 'distance', '📍', 'Premier kilomètre', '1 km cumulé', s => s.km, 1),
+    B('km5', 'distance', '👣', '5 bornes', '5 km cumulés', s => s.km, 5),
+    B('km10', 'distance', '👟', '10 bornes', '10 km cumulés', s => s.km, 10),
+    B('km25', 'distance', '🧭', 'Explorateur', '25 km cumulés', s => s.km, 25),
+    B('km50', 'distance', '🛣️', 'Voyageur', '50 km cumulés', s => s.km, 50),
+    B('km100', 'distance', '🌍', 'Centurion', '100 km cumulés', s => s.km, 100),
+    B('km250', 'distance', '🚀', 'Globe-trotteur', '250 km cumulés', s => s.km, 250),
+    B('km500', 'distance', '🌋', 'Ultra', '500 km cumulés', s => s.km, 500),
+    B('km1000', 'distance', '🌌', 'Légende de la route', '1 000 km cumulés', s => s.km, 1000),
+    // Course continue MESURÉE au chrono (jamais une saisie manuelle ni une déclaration)
+    B('run5', 'course', '⏳', '5 min non-stop', 'Courir 5 min sans t\'arrêter (mesuré)', s => s.maxRun, 5, { run: true }),
+    B('run10', 'course', '⏱️', '10 min non-stop', 'Courir 10 min sans t\'arrêter (mesuré)', s => s.maxRun, 10, { run: true }),
+    B('run30', 'course', '🥇', '30 min non-stop', 'Courir 30 min sans t\'arrêter (mesuré)', s => s.maxRun, 30, { run: true }),
+    // Régularité
+    B('week', 'regularite', '📅', 'Semaine parfaite', '3 jours actifs dans une semaine', s => s.perfectWeeks, 1),
+    B('gentle4', 'regularite', '🌱', 'Petit à petit', '4 semaines d\'affilée avec au moins 2 jours actifs', s => s.gentleBest, 4),
+    B('streak4', 'regularite', '🔥', 'Machine', '4 semaines parfaites d\'affilée', s => s.bestStreak, 4),
+    // Récupération : récompense le repos après une séance difficile
+    B('listen1', 'recup', '🧘', 'Écoute ton corps', 'Respecter la récupération après une séance difficile', s => s.respected, 1),
+    B('listen5', 'recup', '🦉', 'Sagesse', 'Respecter 5 fois la récupération', s => s.respected, 5),
+    // Poids : relatifs à l'objectif de chacun, sur le meilleur résultat atteint
+    B('weigh', 'poids', '⚖️', 'Point zéro', '1ère pesée', s => s.weights, 1),
+    B('kg1', 'poids', '🌱', 'Premier kilo', '−1 kg', s => s.maxLost, 1),
+    B('q25', 'poids', '🎯', 'Premier quart', '25 % de l\'objectif', s => s.maxLost, s => s.goalTotal * 0.25),
+    B('q50', 'poids', '💎', 'Mi-parcours', '50 % de l\'objectif', s => s.maxLost, s => s.goalTotal * 0.5),
+    B('q75', 'poids', '🚀', 'Dernière ligne droite', '75 % de l\'objectif', s => s.maxLost, s => s.goalTotal * 0.75),
+    B('goal', 'poids', '👑', 'Mission accomplie', 'Objectif principal atteint', s => s.maxLost, s => s.goalTotal),
+    B('bonus', 'poids', '🌟', 'Au-delà', 'Objectif bonus atteint', s => s.maxLost, s => s.bonusTotal),
+  ];
+  // Progression d'un défi : { value, target } (target 0 = défi pas encore applicable)
+  function badgeProgress(b, s) {
+    const target = typeof b.target === 'function' ? b.target(s) : b.target;
+    return { value: round(b.metric(s) || 0, 1), target: round(Math.max(0, target || 0), 1) };
+  }
+  for (const b of BADGES) b.test = s => { const { value, target } = badgeProgress(b, s); return target > 0 && value >= target; };
+
+  // Récompenses symboliques débloquées à chaque rang
+  const REWARDS = [
+    { icon: '🎒', name: 'Sac du départ' },
+    { icon: '🎽', name: 'Maillot d\'apprenti' },
+    { icon: '🧭', name: 'Boussole d\'éclaireur' },
+    { icon: '👟', name: 'Chaussures de coureur' },
+    { icon: '🏅', name: 'Médaille d\'athlète' },
+    { icon: '🛡️', name: 'Bouclier du guerrier' },
+    { icon: '🏆', name: 'Coupe du champion' },
+    { icon: '⛰️', name: 'Cape du titan' },
+    { icon: '👑', name: 'Couronne de légende' },
   ];
 
   // ---------- 2. Dates (format AAAA-MM-JJ, heure locale) ----------
@@ -292,6 +342,7 @@
   function derive(data, today = todayISO()) {
     const p = data.profile || {};
     const goalTotal = p.startWeight > 0 && p.goalWeight > 0 ? Math.max(0, round(p.startWeight - p.goalWeight, 1)) : 0;
+    const bonusTotal = p.startWeight > 0 && p.bonusGoal > 0 ? Math.max(0, round(p.startWeight - p.bonusGoal, 1)) : 0;
 
     // 4a. Programme : on rejoue les séances du programme dans l'ordre des dates
     const sessions = data.sessions.map(upgradeSession).sort(bySessionOrder);
@@ -312,8 +363,9 @@
     const perfectWeeks = new Set();
     const weighWeeks = new Set();
     const records = { maxDistance: 0, maxRun: 0, maxDistanceDate: null, maxRunDate: null };
-    const acc = { sessions: 0, km: 0, minutes: 0, strength: 0, weights: 0, maxLost: 0 };
-    let bestStreak = 0;
+    const acc = { sessions: 0, km: 0, minutes: 0, strength: 0, weights: 0, maxLost: 0, walks: 0, walkKm: 0, freeRuns: 0, freeWalks: 0, respected: 0 };
+    let bestStreak = 0, gentleBest = 0, pendingHard = null, snap = null;
+    const gentleWeeks = new Set(); // semaines avec au moins 2 jours actifs
 
     for (const it of timeline) {
       if (it.kind === 's') {
@@ -343,6 +395,7 @@
         const days = weekDays[wk] || (weekDays[wk] = new Set());
         const before = days.size;
         days.add(s.date);
+        if (before < 2 && days.size >= 2) { gentleWeeks.add(wk); gentleBest = bestStreakOf(gentleWeeks); }
         if (before < WEEKLY_TARGET && days.size >= WEEKLY_TARGET) {
           ledger.push({ key: `w:${wk}`, date: s.date, amount: XP.weeklyGoal, label: 'Objectif hebdo atteint 🔥' });
           perfectWeeks.add(wk);
@@ -352,6 +405,13 @@
         acc.km = round(acc.km + s.km, 2);
         acc.minutes += s.duration;
         if (s.type === 'strength') acc.strength++;
+        if (s.type === 'walk') { acc.walks++; acc.walkKm = round(acc.walkKm + s.km, 2); }
+        if (s.mode === 'libre') { if (s.type === 'run') acc.freeRuns++; else acc.freeWalks++; }
+        // Récupération respectée : après une course difficile, la suivante attend le repos conseillé
+        if (s.type === 'run') {
+          if (pendingHard && daysBetween(pendingHard.date, s.date) > restDaysAfter(pendingHard)) acc.respected++;
+          pendingHard = s.feel >= 3 ? s : null;
+        }
       } else {
         const w = it.item, wk = weekKey(w.date);
         if (!weighWeeks.has(wk)) {
@@ -363,8 +423,14 @@
       }
 
       // Succès débloqués par cette saisie
-      const snap = { ...acc, perfectWeeks: perfectWeeks.size, bestStreak, maxRun: records.maxRun, goalTotal };
+      snap = { ...acc, perfectWeeks: perfectWeeks.size, bestStreak, gentleBest, maxRun: records.maxRun, goalTotal, bonusTotal };
       for (const b of BADGES) if (!badges[b.id] && b.test(snap)) badges[b.id] = it.date;
+    }
+    if (!snap) snap = { ...acc, perfectWeeks: 0, bestStreak: 0, gentleBest: 0, maxRun: 0, goalTotal, bonusTotal };
+    // Récupération en cours : une course difficile récente dont le repos est respecté jusqu'à aujourd'hui compte aussi
+    if (pendingHard && daysBetween(pendingHard.date, today) > restDaysAfter(pendingHard)) {
+      snap = { ...snap, respected: snap.respected + 1 };
+      for (const b of BADGES) if (!badges[b.id] && b.test(snap)) badges[b.id] = addDays(pendingHard.date, restDaysAfter(pendingHard) + 1);
     }
 
     // 4c. Statistiques du jour
@@ -377,10 +443,17 @@
 
     const current = weights.length ? weights[weights.length - 1].kg : p.startWeight;
     const xp = ledger.reduce((a, e) => a + e.amount, 0);
+    const levelDates = {};
+    let cum = 0, lv = 1;
+    for (const e of ledger) {
+      cum += e.amount;
+      e.total = cum;
+      while (lv < LEVELS.length && cum >= LEVELS[lv].xp) { levelDates[lv + 1] = e.date; lv++; }
+    }
     const lastProgram = [...sessions].reverse().find(s => s.prog && s.prog.valid) || null;
 
     return {
-      xp, level: levelInfo(xp), ledger, badges, records, programStep: step, adjustments,
+      xp, level: levelInfo(xp), ledger, badges, records, programStep: step, adjustments, levelDates, snap,
       sessions,                                     // séances enrichies (xp, label, prog), ordre chronologique
       sessionsById: Object.fromEntries(sessions.map(s => [s.id, s])),
       stats: {
@@ -403,6 +476,8 @@
     if (!(p.goalWeight >= 30 && p.goalWeight <= 300)) return 'Indique ton poids cible.';
     if (p.goalWeight >= p.startWeight) return 'Ton poids cible doit être inférieur à ton poids actuel.';
     if (p.startWeight - p.goalWeight < 1) return 'Vise au moins 1 kg de différence.';
+    if (p.bonusGoal !== undefined && p.bonusGoal !== null && !(p.bonusGoal >= 30 && p.bonusGoal < p.goalWeight))
+      return 'L\'objectif bonus doit être inférieur à l\'objectif principal.';
     if (p.startDate !== undefined) {
       if (!isValidISO(p.startDate) || !isValidISO(p.endDate)) return 'Choisis une date de début et une échéance.';
       if (daysBetween(p.startDate, p.endDate) < 14) return 'Laisse-toi au moins 2 semaines.';
@@ -425,7 +500,7 @@
   }
 
   const emptyData = () => ({
-    profile: { name: '', startWeight: null, goalWeight: null, height: null, startDate: todayISO(), endDate: '' },
+    profile: { name: '', startWeight: null, goalWeight: null, bonusGoal: null, height: null, startDate: todayISO(), endDate: '' },
     onboarded: false,
     sessions: [],
     weights: [],
@@ -444,6 +519,7 @@
     return {
       name: cleanText(r.name, 20),
       startWeight: w(r.startWeight),
+      bonusGoal: (() => { const b = w(r.bonusGoal), g = w(r.goalWeight); return b && g && b < g ? b : null; })(),
       goalWeight: w(r.goalWeight),
       height: inRange(h, LIMITS.height) ? h : null,
       startDate: isValidISO(r.startDate) ? r.startDate : todayISO(),
@@ -883,6 +959,114 @@
   const isValidFreeTimer = t => !!t && typeof t === 'object' && t.mode === 'free' && (t.kind === 'run' || t.kind === 'walk') &&
     [t.startedAt, t.pausedMs].every(Number.isFinite) && (t.pausedAt === null || Number.isFinite(t.pausedAt));
 
+  // ---------- 11. Statistiques avancées ----------
+  // Tout est recalculé à partir des séances et des pesées : rien n'est stocké, rien n'est inventé.
+  // « Mesuré » = chronomètre (temps) ou capteur (distance GPS / Santé / podomètre).
+  const MEASURED_SOURCES = ['gps', 'sante', 'podometre'];
+  const monthKey = iso => iso.slice(0, 7);
+  const shiftMonth = (key, n) => {
+    const [y, m] = key.split('-').map(Number);
+    const d = new Date(y, m - 1 + n, 1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  };
+  const avg = list => (list.length ? list.reduce((a, x) => a + x, 0) / list.length : null);
+
+  function statsReport(data, Dd, today = todayISO(), opts = {}) {
+    const nWeeks = opts.weeks || 8, nMonths = opts.months || 6;
+    const p = data.profile || {};
+    const past = Dd.sessions.filter(s => s.date <= today);
+    const bucket = key => ({ key, km: 0, minutes: 0, sessions: 0, days: new Set(), runSec: 0, walkSec: 0, maxRunSec: 0 });
+    const add = (b, s) => {
+      b.km = round(b.km + s.km, 2); b.minutes += s.duration; b.sessions++; b.days.add(s.date);
+      if (s.timing) {
+        b.runSec += s.timing.runSec || 0; b.walkSec += s.timing.walkSec || 0;
+        if (s.type === 'run') b.maxRunSec = Math.max(b.maxRunSec, s.timing.maxRunSec || 0);
+      }
+    };
+    const finish = b => ({ ...b, days: b.days.size });
+
+    // Semaines (toutes, pour les records) et derniers mois
+    const allWeeks = new Map();
+    for (const s of past) { const k = weekKey(s.date); if (!allWeeks.has(k)) allWeeks.set(k, bucket(k)); add(allWeeks.get(k), s); }
+    const cur = weekKey(today);
+    const weeks = Array.from({ length: nWeeks }, (_, i) => shiftWeek(cur, i - nWeeks + 1)).map(k => finish(allWeeks.get(k) || bucket(k)));
+    const curM = monthKey(today);
+    const months = Array.from({ length: nMonths }, (_, i) => shiftMonth(curM, i - nMonths + 1)).map(k => {
+      const b = bucket(k);
+      past.filter(s => monthKey(s.date) === k).forEach(s => add(b, s));
+      return finish(b);
+    });
+
+    // Totaux, en distinguant ce qui est mesuré de ce qui est saisi
+    const totals = { km: 0, kmMeasured: 0, kmManual: 0, minutes: 0, sessions: past.length, runSec: 0, walkSec: 0, timedSessions: 0, activeDays: new Set() };
+    for (const s of past) {
+      totals.km = round(totals.km + s.km, 2);
+      if (s.km > 0) {
+        if (s.distance && MEASURED_SOURCES.includes(s.distance.source)) totals.kmMeasured = round(totals.kmMeasured + s.km, 2);
+        else totals.kmManual = round(totals.kmManual + s.km, 2);
+      }
+      totals.minutes += s.duration;
+      totals.activeDays.add(s.date);
+      if (s.timing) { totals.timedSessions++; totals.runSec += s.timing.runSec || 0; totals.walkSec += s.timing.walkSec || 0; }
+    }
+    totals.activeDays = totals.activeDays.size;
+
+    // Séances par type
+    const types = { programme: 0, programmeValides: 0, courseLibre: 0, marcheLibre: 0, courseManuelle: 0, marcheManuelle: 0, muscu: 0 };
+    for (const s of past) {
+      if (s.prog) { types.programme++; if (s.prog.valid) types.programmeValides++; }
+      else if (s.mode === 'libre') types[s.type === 'run' ? 'courseLibre' : 'marcheLibre']++;
+      else if (s.type === 'run') types.courseManuelle++;
+      else if (s.type === 'walk') types.marcheManuelle++;
+      else types.muscu++;
+    }
+
+    // Records personnels (mesuré ou saisi, toujours indiqué)
+    const records = [];
+    const maxBy = (list, f) => list.reduce((best, x) => (f(x) > (best ? f(best) : 0) ? x : best), null);
+    const far = maxBy(past.filter(s => s.km > 0), s => s.km);
+    if (far) records.push({ id: 'distance', icon: '🛣️', label: 'Plus longue distance', value: far.km, unit: 'km', date: far.date, measured: !!(far.distance && MEASURED_SOURCES.includes(far.distance.source)) });
+    if (Dd.records.maxRun > 0) records.push({ id: 'run', icon: '🏃', label: 'Course continue', value: Dd.records.maxRun, unit: 'min', date: Dd.records.maxRunDate, measured: true });
+    const long = maxBy(past.filter(s => s.timing && s.timing.activeSec), s => s.timing.activeSec);
+    if (long) records.push({ id: 'long', icon: '⏱️', label: 'Plus longue séance chronométrée', value: round(long.timing.activeSec / 60, 0), unit: 'min', date: long.date, measured: true });
+    const wl = [...allWeeks.values()].map(finish);
+    const bestKm = maxBy(wl.filter(w => w.km > 0), w => w.km);
+    if (bestKm) records.push({ id: 'week-km', icon: '📈', label: 'Meilleure semaine (distance)', value: bestKm.km, unit: 'km', date: bestKm.key, week: true, measured: false });
+    const bestDays = maxBy(wl, w => w.days);
+    if (bestDays) records.push({ id: 'week-days', icon: '📅', label: 'Semaine la plus active', value: bestDays.days, unit: 'jours', date: bestDays.key, week: true, measured: false });
+
+    // Comparaison avec la semaine précédente
+    const thisW = weeks[weeks.length - 1], lastW = weeks[weeks.length - 2] || bucket('');
+    const compare = ['km', 'minutes', 'days', 'sessions'].map(k => ({ key: k, now: thisW[k], before: lastW[k], diff: round((thisW[k] || 0) - (lastW[k] || 0), 2) }));
+
+    // Poids : courbe réelle, moyenne mobile 7 jours, évolution, objectifs
+    const ws = Dd.stats.sortedW;
+    const movingAvg = ws.map(w => {
+      const from = addDays(w.date, -6);
+      return { date: w.date, kg: round(avg(ws.filter(x => x.date >= from && x.date <= w.date).map(x => x.kg)), 1) };
+    });
+    const change = (keyOf, shift) => {
+      if (!ws.length) return null;
+      const lastKey = keyOf(ws[ws.length - 1].date), prevKey = shift(lastKey, -1);
+      const a = avg(ws.filter(w => keyOf(w.date) === lastKey).map(w => w.kg));
+      const b = avg(ws.filter(w => keyOf(w.date) === prevKey).map(w => w.kg));
+      return b === null ? null : { key: lastKey, diff: round(a - b, 1) };
+    };
+    const current = Dd.stats.current;
+    const goal = (target, label) => {
+      if (!(p.startWeight > 0) || !(target > 0) || target >= p.startWeight) return null;
+      const total = round(p.startWeight - target, 1), done = round(Math.max(0, p.startWeight - current), 1);
+      return { label, target, total, done, left: round(Math.max(0, current - target), 1), pct: Math.min(1, done / total), reached: Dd.stats.maxLost >= total };
+    };
+    const weight = {
+      points: ws, movingAvg,
+      weekChange: change(weekKey, shiftWeek), monthChange: change(monthKey, shiftMonth),
+      goals: [goal(p.goalWeight, 'Objectif principal'), goal(p.bonusGoal, 'Objectif bonus')].filter(Boolean),
+    };
+
+    return { weeks, months, totals, types, records, compare, weight };
+  }
+
   // ---------- 9. Coach adaptatif ----------
   // Le coach lit les données (ressenti, régularité, séances, récupération, endurance)
   // et PROPOSE. Il ne change jamais le programme tout seul au-delà des règles validées
@@ -1006,6 +1190,7 @@
   }
 
   return {
+    BADGE_CATS, REWARDS, badgeProgress, statsReport, MEASURED_SOURCES, monthKey, shiftMonth,
     XP, WEEKLY_TARGET, LIMITS, LEVELS, PROGRAM, PROGRAM_STEPS, WARMUP, COOLDOWN, BADGES, HEALTHY_PACE, SCHEMA_VERSION, DAY,
     toISO, parseISO, todayISO, daysBetween, weekKey, shiftWeek, addDays, isValidISO, fmtMin,
     levelInfo, programSession, sessionXP, continuousRun, bestStreakOf, derive,

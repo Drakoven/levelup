@@ -13,15 +13,9 @@ sauvegarde avant toute migration, tests automatisés, compte rendu à chaque ét
 | Avant l'étape 4 | Validation au chrono (90 % par intervalle), séances déclarées, format v3 (sources de mesure) |
 | 4. Coach adaptatif | Ressenti sur 4 niveaux, récupération, régularité, endurance mesurée, propositions de retour en arrière, marche de remplacement |
 | 4.5 Séance libre | Course libre et marche libre au chrono : démarrer, pause, terminer, bilan (durée, distance, ressenti, XP), reprise après rechargement, records de course continue (sans pause), jamais d'effet sur le programme guidé |
+| 5. Statistiques et RPG | Statistiques par semaine et par mois, séances par type, records mesurés ou saisis, endurance, poids (moyenne 7 jours, objectif bonus), 34 succès et défis avec progression, titres et récompenses, journal des exploits, historique des XP |
 
 ## Prochaines étapes (PWA)
-
-### Étape 5 — RPG et statistiques
-- Succès de distance cumulée : 1, 10, 50, 100, 250, 500, 1 000 km.
-- Historique des XP, quêtes quotidiennes et hebdomadaires, récompenses symboliques.
-- Statistiques : kilomètres par semaine et par mois, durée moyenne, records, progression de l'endurance.
-- Poids : moyenne mobile, évolution hebdomadaire et mensuelle.
-- Objectif principal (80 kg) et objectif bonus (75 kg).
 
 ### Étape 6 — Tests sur ordinateur et iPhone
 - Hébergement HTTPS gratuit (GitHub Pages) pour installer la PWA sur l'iPhone 17 Pro.

@@ -7,13 +7,15 @@ rapporte de l'XP, fait monter ton personnage de niveau… et toi aussi, dans la 
 
 ## Fonctionnalités
 
-- **Personnage RPG** : 9 rangs (Recrue → Légende), XP, succès, attributs.
+- **Personnage RPG** : 9 rangs (Recrue → Légende) avec récompenses symboliques, XP, 34 succès et défis progressifs, journal des exploits, historique des XP.
 - **Programme course 12 semaines** : du 6 × 1 min de course jusqu'à 30 min sans s'arrêter.
 - **Assistant de course** : chrono d'intervalles, compte à rebours, annonces vocales en français,
   alerte 10 s avant chaque changement, bilan de séance.
 - **Séance libre** : course ou marche au chrono, à ton rythme, hors programme.
 - **Coach adaptatif** : tient compte du ressenti, de la récupération, de la régularité et de l'endurance.
-- **Statistiques** : courbe de poids, kilomètres par semaine, régularité, records.
+- **Statistiques** : distance et durée par semaine et par mois, temps de course et de marche mesurés, séances par type,
+  comparaison avec la semaine précédente, records (mesurés ou saisis), endurance, courbe de poids avec moyenne 7 jours,
+  objectif principal et objectif bonus.
 - **Hors connexion** et installable sur iPhone (PWA).
 
 ## Installer sur iPhone
@@ -36,7 +38,7 @@ Application en HTML, CSS et JavaScript natifs, sans dépendance.
 - `sw.js` : fonctionnement hors connexion et mises à jour.
 
 ```bash
-npm test          # 119 tests automatisés (Node.js 18 ou plus)
+npm test          # 138 tests automatisés (Node.js 18 ou plus)
 npm start         # serveur local sur http://localhost:5173
 ```
 

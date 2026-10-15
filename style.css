@@ -340,7 +340,7 @@ label.f input:focus { border-color: var(--lime); }
 
 /* ---------- Bandeau "nouvelle version" ---------- */
 .update-bar {
-  position: fixed; z-index: 75; left: 50%; transform: translateX(-50%); bottom: calc(160px + var(--safe-b));
+  position: fixed; z-index: 95; left: 50%; transform: translateX(-50%); bottom: calc(160px + var(--safe-b)); /* au-dessus de tous les écrans, création du personnage comprise */
   width: min(520px, calc(100% - 32px)); display: none; align-items: center; justify-content: space-between; gap: 10px;
   padding: 10px 10px 10px 16px; border-radius: 18px; font-size: 14px; font-weight: 600;
   background: rgba(22,22,34,.96); border: 1px solid rgba(139,92,246,.5); box-shadow: 0 12px 30px rgba(0,0,0,.5);

@@ -820,6 +820,12 @@
   // Repères de ce qui a déjà été annoncé (pour ne jamais répéter une annonce)
   const initialMarks = () => ({ idx: -1, count: null, warned: -1 });
 
+  // Annonce manquée pendant que l'app était suspendue (iPhone verrouillé, autre app) :
+  // si son échéance est passée depuis plus de LATE_MS, elle est marquée « late »
+  // et l'app ne la joue PAS (pas d'annonce en retard, pas de rafale au déverrouillage).
+  // Le calcul du temps, lui, reste exact. La prochaine échéance normale sera annoncée.
+  const LATE_MS = 3000;
+
   // Calcule les événements à déclencher depuis le dernier passage :
   //   countdown (chaque seconde du compte à rebours), phase (nouvelle phase),
   //   warn (alerte avant changement), catchup (phases passées en arrière-plan), done (fin)
@@ -833,19 +839,24 @@
       if (m.idx !== 'done') {
         if (typeof m.idx === 'number' && m.idx >= 0 && t.segs.length - m.idx > 1) events.push({ type: 'catchup', jumped: t.segs.length - m.idx });
         m.idx = 'done';
-        events.push({ type: 'done' });
+        // Fin atteinte pendant la suspension : le bilan s'affiche, sans annonce tardive
+        const overMs = timerActiveMs(t, now) + t.skipMs - st.totalMs;
+        events.push({ type: 'done', late: overMs > LATE_MS });
       }
       return { st, events, marks: m };
     }
     if (st.idx !== m.idx) {
       if (typeof m.idx === 'number' && m.idx >= 0 && st.idx - m.idx > 1) events.push({ type: 'catchup', jumped: st.idx - m.idx });
       m.idx = st.idx;
-      events.push({ type: 'phase', idx: st.idx, seg: t.segs[st.idx], next: t.segs[st.idx + 1] || null });
+      // Phase commencée depuis plus de 3 s (app suspendue) : pas d'annonce tardive
+      const intoPhaseMs = t.segs[st.idx].sec * 1000 - st.leftMs;
+      events.push({ type: 'phase', idx: st.idx, seg: t.segs[st.idx], next: t.segs[st.idx + 1] || null, late: intoPhaseMs > LATE_MS });
       if (warnSec > 0 && st.leftMs <= warnSec * 1000) m.warned = st.idx; // trop tard pour prévenir
     }
     if (warnSec > 0 && !st.paused && m.warned !== st.idx && st.leftMs <= warnSec * 1000 && t.segs[st.idx].sec > warnSec + 5) {
       m.warned = st.idx;
-      events.push({ type: 'warn', idx: st.idx, next: t.segs[st.idx + 1] || null });
+      // « Dans 10 secondes » n'est dit que s'il reste vraiment environ 10 secondes
+      if (st.leftMs > warnSec * 1000 - LATE_MS) events.push({ type: 'warn', idx: st.idx, next: t.segs[st.idx + 1] || null });
     }
     return { st, events, marks: m };
   }
@@ -859,7 +870,8 @@
   }
 
   // Réglages de l'assistant (stockés sur l'appareil, hors sauvegarde)
-  const DEFAULT_SETTINGS = { voice: true, voiceVolume: 1, voiceName: '', sounds: true, vibration: true, warn10: true, countdown: true };
+  const DEFAULT_SETTINGS = { voice: true, voiceVolume: 1, voiceName: '', voiceURI: '', voiceRate: 1, sounds: true, vibration: true, warn10: true, countdown: true };
+  const VOICE_RATE = [0.7, 1.3]; // vitesse de parole autorisée (1 = normale)
   function normSettings(raw) {
     const r = raw && typeof raw === 'object' ? raw : {};
     const out = { ...DEFAULT_SETTINGS };
@@ -867,7 +879,45 @@
     const v = num(r.voiceVolume);
     if (inRange(v, [0.1, 1])) out.voiceVolume = round(v, 1);
     if (typeof r.voiceName === 'string') out.voiceName = r.voiceName.slice(0, 100);
+    if (typeof r.voiceURI === 'string') out.voiceURI = r.voiceURI.slice(0, 200);
+    const rate = num(r.voiceRate);
+    if (inRange(rate, VOICE_RATE)) out.voiceRate = round(rate, 2);
     return out;
+  }
+
+  // ----- Voix du coach -----
+  // Les voix viennent du système (Safari iOS : celles installées dans Réglages › Accessibilité ›
+  // Contenu énoncé › Voix). Aucune n'est supposée présente. iOS n'indique pas si une voix
+  // est féminine ou masculine : on affiche le nom, la région, et on laisse écouter.
+  const isFrench = v => !!v && /^fr([-_]|$)/i.test(v.lang || '');
+  const REGIONS = { FR: 'France', CA: 'Canada', BE: 'Belgique', CH: 'Suisse', LU: 'Luxembourg' };
+
+  function frenchVoicesOf(voices) {
+    const seen = new Set();
+    return (voices || []).filter(isFrench).filter(v => {
+      const key = v.voiceURI || v.name;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    }).sort((a, b) => (/fr[-_]FR/i.test(b.lang) - /fr[-_]FR/i.test(a.lang)) || String(a.name).localeCompare(String(b.name), 'fr'));
+  }
+
+  function describeVoice(v) {
+    const region = REGIONS[String(v.lang || '').split(/[-_]/)[1]?.toUpperCase()] || 'Français';
+    const quality = /enhanced|premium|améliorée|siri/i.test(`${v.name} ${v.voiceURI || ''}`) ? 'qualité supérieure' : '';
+    const name = String(v.name || 'Voix').replace(/\s*\((enhanced|premium|améliorée)\)/i, '').trim();
+    return { name, region, quality };
+  }
+
+  // Voix à utiliser : celle choisie si elle existe encore, sinon une voix française de secours.
+  //   fallback = true si une voix avait été choisie mais n'est plus disponible
+  function pickVoice(voices, s = {}) {
+    const fr = frenchVoicesOf(voices);
+    const wanted = s.voiceURI || s.voiceName;
+    const chosen = wanted ? fr.find(v => (s.voiceURI && v.voiceURI === s.voiceURI) || (!s.voiceURI && v.name === s.voiceName)) : null;
+    if (chosen) return { voice: chosen, fallback: false };
+    const backup = fr.find(v => v.default) || fr.find(v => /fr[-_]FR/i.test(v.lang) && v.localService !== false) || fr.find(v => /fr[-_]FR/i.test(v.lang)) || fr[0] || null;
+    return { voice: backup, fallback: !!wanted };
   }
 
   // ---------- 10. Séance libre (course ou marche, sans intervalles) ----------
@@ -912,12 +962,14 @@
       if (m.count !== st.countdownSec) { m.count = st.countdownSec; events.push({ type: 'countdown', n: st.countdownSec }); }
       return { st, events, marks: m };
     }
-    if (!m.started) { m.started = true; events.push({ type: 'start' }); }
+    if (!m.started) { m.started = true; events.push({ type: 'start', late: st.activeMs > LATE_MS }); }
     const reached = everyMin > 0 ? Math.floor(st.activeMs / (everyMin * 60000)) : 0;
     if (reached > m.milestone) {
-      // Retour d'arrière-plan : on n'annonce que le dernier palier atteint
+      // Palier franchi pendant la suspension (ex. 5 min, déverrouillage à 8 min) :
+      // marqué « late » et jamais annoncé ; le prochain palier (10 min) le sera normalement.
       m.milestone = reached;
-      events.push({ type: 'milestone', minutes: reached * everyMin });
+      const sinceMs = st.activeMs - reached * everyMin * 60000;
+      events.push({ type: 'milestone', minutes: reached * everyMin, late: sinceMs > LATE_MS });
     }
     if (st.capped) events.push({ type: 'capped' });
     return { st, events, marks: m };
@@ -1201,6 +1253,6 @@
     createTimer, timerState, timerPause, timerResume, timerStartNow, timerSkip, timerMinutes, timerActiveMs, timerSummary, isValidTimer,
     FREE_MAX_MS, FREE_MILESTONE_MIN, createFreeTimer, freeState, freeCues, freeInitialMarks, freeResumeMarks, freeSessionEntry, isValidFreeTimer,
     FEEL_LABELS, ADJ_KINDS, ADJ_REASONS, LONG_BREAK_DAYS, restDaysAfter, coachAdvice, normAdjustments,
-    phaseName, spokenDuration, phaseCue, warnCue, CUES, initialMarks, timerCues, resumeMarks, DEFAULT_SETTINGS, normSettings,
+    LATE_MS, VOICE_RATE, frenchVoicesOf, describeVoice, pickVoice, phaseName, spokenDuration, phaseCue, warnCue, CUES, initialMarks, timerCues, resumeMarks, DEFAULT_SETTINGS, normSettings,
   };
 });

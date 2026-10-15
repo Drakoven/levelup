@@ -17,6 +17,14 @@ sauvegarde avant toute migration, tests automatisés, compte rendu à chaque ét
 
 ## Prochaines étapes (PWA)
 
+### Étape 5.5 — Journal de quêtes (proposée, à valider)
+- Univers Fantasy / MMORPG discret, au service de l'entraînement réel.
+- Quêtes principales en chapitres, quotidiennes, hebdomadaires et épiques.
+- Progression automatique à partir des séances enregistrées (aucune validation manuelle).
+- XP de quête attribuée une seule fois par accomplissement (clé unique, recalculée).
+- Quêtes adaptées au niveau et aux jours de récupération du coach, avec alternatives de marche.
+- Réutilise le moteur de défis de l'étape 5 (succès conservés, sans XP).
+
 ### Étape 6 — Tests sur ordinateur et iPhone
 - Hébergement HTTPS gratuit (GitHub Pages) pour installer la PWA sur l'iPhone 17 Pro.
 - Vérification réelle de la voix, des bips, de l'écran maintenu allumé.

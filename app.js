@@ -386,16 +386,45 @@ function renderTrain() {
 }
 
 // Réglages de l'assistant de course (voix, bips, alertes)
-function assistCard() {
+const rateLabel = r => `×${fmtNum(r, 2)} · ${r < 0.9 ? 'lente' : r > 1.1 ? 'rapide' : 'normale'}`;
+
+// Liste des voix françaises réellement disponibles sur l'appareil
+function voiceList() {
+  if (!canSpeak) return '<p class="small muted">Ce navigateur ne propose pas d\'annonces vocales : seuls les bips seront utilisés.</p>';
   const voices = frenchVoices();
+  if (!voices.length) {
+    watchVoices();
+    return `<p class="small muted" id="voiceStatus">${voiceLoad.done ? 'Aucune voix française trouvée : la voix par défaut du téléphone sera utilisée.' : 'Chargement des voix…'}</p>`;
+  }
+  const pick = C.pickVoice(allVoices(), settings);
+  // Choix actuel (y compris un choix fait par nom dans la version précédente)
+  const current = settings.voiceURI || (settings.voiceName && pick.voice && !pick.fallback ? (pick.voice.voiceURI || pick.voice.name) : '');
+  const row = (uri, title, sub) => `<div class="voice-row ${uri === current ? 'on' : ''}">
+      <label class="voice-pick"><input type="radio" name="voicePick" value="${esc(uri)}" ${uri === current ? 'checked' : ''}>
+        <span><b>${esc(title)}</b><span class="small muted">${esc(sub)}</span></span></label>
+      ${uri ? `<button class="voice-play" data-action="voice-preview" data-uri="${esc(uri)}" aria-label="Écouter ${esc(title)}">▶</button>` : ''}
+    </div>`;
+  return `<div class="voice-list">
+      ${row('', 'Automatique', `voix française par défaut${pick.voice && !current ? ` · ${C.describeVoice(pick.voice).name}` : ''}`)}
+      ${voices.map(v => { const d = C.describeVoice(v); return row(v.voiceURI || v.name, d.name, [d.region, d.quality].filter(Boolean).join(' · ')); }).join('')}
+    </div>
+    ${pick.fallback ? '<p class="small" style="color:var(--orange);margin:8px 0 0">La voix choisie n\'est plus disponible sur cet appareil : une voix française de secours est utilisée.</p>' : ''}`;
+}
+
+// Met à jour la carte de réglages sans redessiner tout l'écran
+function refreshAssist() {
+  const box = $('#voiceBox');
+  if (box) box.innerHTML = voiceList();
+}
+
+function assistCard() {
   const chk = (key, label) => `<label class="check"><input type="checkbox" data-setting="${key}" ${settings[key] ? 'checked' : ''}> ${label}</label>`;
   return `<div class="section-title"><h2>Assistant de course</h2></div>
     <div class="card" id="assistCard">
       ${chk('voice', '🗣️ Annonces vocales en français')}
-      ${canSpeak && voices.length > 1 ? `<label class="f">Voix<select data-setting="voiceName">
-        <option value="">Automatique</option>
-        ${voices.map(v => `<option value="${esc(v.name)}" ${v.name === settings.voiceName ? 'selected' : ''}>${esc(v.name)}</option>`).join('')}
-      </select></label>` : ''}
+      <div class="eyebrow" style="margin:6px 0 8px">Voix du coach</div>
+      <div id="voiceBox">${voiceList()}</div>
+      <label class="f" style="margin-top:12px">Vitesse de la voix · <span id="rateLabel">${rateLabel(settings.voiceRate)}</span><input type="range" min="${C.VOICE_RATE[0]}" max="${C.VOICE_RATE[1]}" step="0.05" data-setting="voiceRate" value="${settings.voiceRate}"></label>
       <label class="f">Volume de la voix<input type="range" min="0.2" max="1" step="0.1" data-setting="voiceVolume" value="${settings.voiceVolume}"></label>
       ${chk('sounds', '🔔 Bips sonores')}
       ${chk('warn10', '⏳ Alerte 10 secondes avant chaque changement')}
@@ -403,8 +432,8 @@ function assistCard() {
       ${canVibrate ? chk('vibration', '📳 Vibrations') : ''}
       <button class="btn ghost block" data-action="test-voice">▶ Tester la voix et les bips</button>
       <p class="small muted" style="margin:12px 0 0;line-height:1.5">
-        ${!canSpeak ? 'Ce navigateur ne propose pas d\'annonces vocales : seuls les bips seront utilisés.<br>' : !voices.length ? 'Aucune voix française détectée pour l\'instant : la voix par défaut sera utilisée.<br>' : ''}
-        Sur iPhone, les annonces et les bips <b>s'arrêtent quand l'écran est verrouillé</b> ou que l'app passe en arrière-plan : iOS met la page en pause. L'app garde l'écran allumé pendant la séance ; au retour, le chrono est exact et la phase en cours est annoncée. Le bouton silencieux peut couper les bips${canVibrate ? '' : ', et l\'iPhone ne permet pas de vibrer depuis une app web'}.
+        Les voix sont celles installées sur ton téléphone. Sur iPhone, tu peux en ajouter dans <b>Réglages › Accessibilité › Contenu énoncé › Voix › Français</b> (les versions « améliorées » sont plus naturelles). iOS n'indique pas si une voix est féminine ou masculine : écoute-les avec ▶.<br><br>
+        Sur iPhone, les annonces et les bips <b>s'arrêtent quand l'écran est verrouillé</b> ou que l'app passe en arrière-plan : iOS met la page en pause. Au retour, le chrono est exact ; les annonces manquées ne sont pas rejouées, la suivante arrive à l'heure. Le bouton silencieux peut couper les bips${canVibrate ? '' : ', et l\'iPhone ne permet pas de vibrer depuis une app web'}.
       </p>
     </div>`;
 }
@@ -1269,24 +1298,53 @@ function vibrate(pattern) { if (!settings.vibration || !canVibrate) return; try 
 
 // Voix française (synthèse vocale du système)
 const canSpeak = 'speechSynthesis' in window && 'SpeechSynthesisUtterance' in window;
-function frenchVoices() {
+function allVoices() {
   if (!canSpeak) return [];
-  try { return speechSynthesis.getVoices().filter(v => /^fr([-_]|$)/i.test(v.lang)); } catch (e) { return []; }
+  try { return speechSynthesis.getVoices() || []; } catch (e) { return []; }
+}
+const frenchVoices = () => C.frenchVoicesOf(allVoices());
+
+// Safari iOS charge la liste des voix en différé (parfois vide au premier appel, et l'événement
+// « voiceschanged » n'est pas toujours émis) : on réessaie pendant quelques secondes.
+const voiceLoad = { tries: 0, timer: null, done: false };
+function watchVoices() {
+  if (!canSpeak || voiceLoad.timer || voiceLoad.done) return;
+  const check = () => {
+    voiceLoad.tries++;
+    const n = frenchVoices().length;
+    if (n || voiceLoad.tries >= 20) {
+      clearInterval(voiceLoad.timer); voiceLoad.timer = null; voiceLoad.done = true;
+      if ($('#assistCard')) refreshAssist();
+    }
+  };
+  voiceLoad.timer = setInterval(check, 250);
+  check();
+}
+if (canSpeak && speechSynthesis.addEventListener) speechSynthesis.addEventListener('voiceschanged', () => { voiceLoad.done = true; if ($('#assistCard')) refreshAssist(); });
+
+// Utterance prête : voix choisie (ou de secours), vitesse et volume
+function utter(text, voiceURI) {
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = 'fr-FR';
+  const pick = voiceURI ? { voice: frenchVoices().find(v => (v.voiceURI || v.name) === voiceURI) || null } : C.pickVoice(allVoices(), settings);
+  if (pick.voice) { u.voice = pick.voice; u.lang = pick.voice.lang; }
+  u.rate = settings.voiceRate;
+  u.volume = settings.voiceVolume;
+  return u;
 }
 function speak(text, force = false) {
   if (!canSpeak || !text || (!settings.voice && !force)) return;
   try {
     speechSynthesis.cancel(); // une annonce remplace la précédente, pas de file d'attente
-    const u = new SpeechSynthesisUtterance(text);
-    u.lang = 'fr-FR';
-    const voices = frenchVoices();
-    const v = voices.find(x => x.name === settings.voiceName) || voices.find(x => x.lang === 'fr-FR') || voices[0];
-    if (v) u.voice = v;
-    u.volume = settings.voiceVolume;
-    speechSynthesis.speak(u);
+    speechSynthesis.speak(utter(text));
   } catch (e) { /* synthèse vocale indisponible */ }
 }
-if (canSpeak && speechSynthesis.addEventListener) speechSynthesis.addEventListener('voiceschanged', () => { if ($('#assistCard')) renderTrain(); });
+// Aperçu d'une voix précise (bouton ▶ de la liste)
+function previewVoice(voiceURI) {
+  if (!canSpeak) return;
+  unlockAudio();
+  try { speechSynthesis.cancel(); speechSynthesis.speak(utter('Commence à courir. 1 minute. Tu vas y arriver !', voiceURI)); } catch (e) { /* ignore */ }
+}
 
 const fmtClock = ms => { const s = Math.max(0, Math.round(ms / 1000)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
 const fmtMinSec = ms => { const s = Math.round(ms / 1000), m = Math.floor(s / 60); return m ? `${m} min${s % 60 ? ` ${String(s % 60).padStart(2, '0')}` : ''}` : `${s} s`; };
@@ -1354,6 +1412,8 @@ function tickRunner() {
   const { st, events, marks } = C.timerCues(runner.t, runner.marks, Date.now(), settings.warn10 ? 10 : 0);
   runner.marks = marks;
   for (const ev of events) {
+    // Annonce manquée pendant la suspension de l'app : jamais jouée en retard
+    if (ev.late && ev.type !== 'done') continue;
     if (ev.type === 'countdown') {
       beep(ev.n === 1 ? 990 : 660, 0.12);
       vibrate(60);
@@ -1369,7 +1429,7 @@ function tickRunner() {
       vibrate([80, 80, 80]);
       speak(C.warnCue(ev.next));
     } else if (ev.type === 'done') {
-      return endRunner(false);
+      return endRunner(false, ev.late); // fin atteinte pendant la suspension : bilan sans annonce
     }
   }
   updateRunner(st);
@@ -1460,7 +1520,7 @@ function updateRunner(st) {
 }
 
 // Fin de séance (naturelle ou arrêt) : on fige l'heure de fin et on montre le bilan
-function endRunner(stopped) {
+function endRunner(stopped, silent = false) {
   if (runner && runner.mode === 'free') return endFree(stopped);
   if (!runner || runner.stage !== 'run') return;
   const now = Date.now();
@@ -1471,7 +1531,7 @@ function endRunner(stopped) {
   runner.stage = 'summary';
   runner.end = { at: now, stopped };
   persistRunner();
-  if (!stopped) { beep(660, 0.15); setTimeout(() => beep(990, 0.3), 160); vibrate([100, 50, 100, 50, 300]); speak(C.CUES.done); }
+  if (!stopped && !silent) { beep(660, 0.15); setTimeout(() => beep(990, 0.3), 160); vibrate([100, 50, 100, 50, 300]); speak(C.CUES.done); }
   drawSummary();
 }
 
@@ -1648,6 +1708,8 @@ function tickFree() {
   const { st, events, marks } = C.freeCues(runner.t, runner.marks, Date.now());
   runner.marks = marks;
   for (const ev of events) {
+    // Palier ou départ manqué pendant la suspension (iPhone verrouillé) : pas d'annonce en retard
+    if (ev.late) continue;
     if (ev.type === 'countdown') { beep(ev.n === 1 ? 990 : 660, 0.12); vibrate(60); if (ev.n <= 3) speak(String(ev.n)); }
     else if (ev.type === 'start') { beep(990, 0.4); vibrate([200, 100, 200]); if (settings.countdown) speak(FREE_GO[runner.kind]); }
     else if (ev.type === 'milestone') { beep(880, 0.2); vibrate(150); speak(`${ev.minutes} minutes.`); }
@@ -1871,6 +1933,7 @@ document.addEventListener('click', e => {
       return;
     case 'toggle-sounds': settings.sounds = !settings.sounds; saveSettings(); updateIcons(); beep(880, 0.1); return;
     case 'test-voice': return testAssistant();
+    case 'voice-preview': return previewVoice(a.dataset.uri);
     case 'close-levelup': return $('#levelup').classList.remove('open');
     case 'edit-weight': {
       const w = data.weights.find(x => x.date === a.dataset.date);
@@ -1940,16 +2003,27 @@ document.addEventListener('change', e => {
 document.addEventListener('input', e => {
   if (e.target.closest('#obForm')) obUpdate();
   if (e.target.closest('#sumForm')) updateSummary();
+  if (e.target.matches('[data-setting="voiceRate"]') && $('#rateLabel')) $('#rateLabel').textContent = rateLabel(+e.target.value);
 });
 // Réglages de l'assistant
 document.addEventListener('change', e => {
+  // Choix de la voix du coach (mémorisé sur l'appareil)
+  if (e.target.name === 'voicePick') {
+    const uri = e.target.value;
+    const v = frenchVoices().find(x => (x.voiceURI || x.name) === uri);
+    settings = C.normSettings({ ...settings, voiceURI: uri, voiceName: v ? v.name : '' });
+    saveSettings();
+    refreshAssist();
+    if (uri) previewVoice(uri); else speak('Voix automatique.', true);
+    return;
+  }
   const key = e.target.dataset && e.target.dataset.setting;
   if (!key) return;
   const value = e.target.type === 'checkbox' ? e.target.checked : e.target.type === 'range' ? +e.target.value : e.target.value;
   settings = C.normSettings({ ...settings, [key]: value });
   saveSettings();
   updateIcons();
-  if (key === 'voiceName' || key === 'voiceVolume') speak('Voix choisie.', true);
+  if (key === 'voiceVolume' || key === 'voiceRate') speak('Voici la nouvelle voix du coach.', true);
 });
 window.addEventListener('hashchange', () => go(location.hash.slice(1)));
 

@@ -13,7 +13,7 @@
 
    ⚠️ Changer VERSION à chaque modification des fichiers de l'app.
    ========================================================= */
-const VERSION = '2.5.3';
+const VERSION = '2.5.5';
 const APP_CACHE = `levelup-app-${VERSION}`;
 const FONT_CACHE = 'levelup-fonts';
 const APP_FILES = [

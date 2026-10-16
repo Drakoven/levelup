@@ -40,7 +40,7 @@ Application en HTML, CSS et JavaScript natifs, sans dépendance.
 - `sw.js` : fonctionnement hors connexion et mises à jour.
 
 ```bash
-npm test          # 186 tests automatisés (Node.js 18 ou plus)
+npm test          # 218 tests automatisés (Node.js 18 ou plus)
 npm start         # serveur local sur http://localhost:5173
 ```
 

@@ -631,6 +631,17 @@
     if (Object.keys(timing).length) out.timing = timing;
     for (const k of ['startedAt', 'endedAt']) { const v = isoTime(raw[k]); if (v) out[k] = v; }
     if (typeof raw.routeId === 'string' && ID_RE.test(raw.routeId)) out.routeId = raw.routeId; // parcours GPS (plus tard)
+    // Résumé du suivi GPS (couverture de la séance, coupures, points, positions rejetées)
+    const g = raw.gps;
+    if (g && typeof g === 'object') {
+      const cov = round(num(g.coverage), 2);
+      const ints = ['gaps', 'points', 'rejected'].map(k => Math.round(num(g[k])));
+      if (inRange(cov, [0, 1]) && ints.every(v => inRange(v, [0, 1e6]))) {
+        out.gps = { coverage: cov, gaps: ints[0], points: ints[1], rejected: ints[2] };
+        const u = Math.round(num(g.uncoveredSec));
+        if (inRange(u, [0, 36000])) out.gps.uncoveredSec = u;
+      }
+    }
     if (raw.type === 'walk' && raw.swap === true) out.swap = true; // marche faite à la place d'une course
     if (raw.mode === 'libre' && raw.type !== 'strength' && !raw.program) out.mode = 'libre'; // séance libre au chrono
     // Communauté (plus tard) : tout est privé par défaut, « public » seulement par choix explicite
@@ -789,7 +800,12 @@
     if (t.pausedAt < t.startedAt) t.startedAt += now - t.pausedAt;
     else {
       t.pausedMs += now - t.pausedAt;
-      if (t.mode === 'free') t.stretchStart = now; // nouvelle période de course continue
+      if (t.mode === 'free') {
+        t.stretchStart = now; // nouvelle période de course continue
+        // Historique des pauses : la couverture GPS est calculée hors pauses
+        if (!Array.isArray(t.pauses)) t.pauses = [];
+        t.pauses.push([t.pausedAt, now]);
+      }
     }
     t.pausedAt = null;
     return t;
@@ -1055,6 +1071,7 @@
     // Distance : la mesure automatique fait foi ; une saisie différente est gardée comme correction
     const km = round(num(opts.km), 2);
     const m = opts.measured && Number.isFinite(opts.measured.km) && opts.measured.km > 0 ? opts.measured : null;
+    if (opts.gps && typeof opts.gps === 'object') entry.gps = { ...opts.gps };
     if (m && (!(km > 0) || km === round(m.km, 2))) entry.distance = { km: round(m.km, 2), source: DIST_SOURCES.includes(m.source) ? m.source : 'gps' };
     else if (m && km > 0) entry.distance = { km, source: 'manuel', measuredKm: round(m.km, 2), corrected: true };
     else if (km > 0) entry.distance = { km, source: 'manuel' };
@@ -1103,12 +1120,13 @@
     });
 
     // Totaux, en distinguant ce qui est mesuré de ce qui est saisi
-    const totals = { km: 0, kmMeasured: 0, kmManual: 0, minutes: 0, sessions: past.length, runSec: 0, walkSec: 0, timedSessions: 0, activeDays: new Set() };
+    const totals = { km: 0, kmMeasured: 0, kmGpsPartial: 0, kmManual: 0, minutes: 0, sessions: past.length, runSec: 0, walkSec: 0, timedSessions: 0, activeDays: new Set() };
     for (const s of past) {
       totals.km = round(totals.km + s.km, 2);
       if (s.km > 0) {
         if (s.distance && MEASURED_SOURCES.includes(s.distance.source)) totals.kmMeasured = round(totals.kmMeasured + s.km, 2);
         else totals.kmManual = round(totals.kmManual + s.km, 2);
+        if (gpsPartial(s)) totals.kmGpsPartial = round(totals.kmGpsPartial + s.km, 2); // mesurés, mais suivi incomplet
       }
       totals.minutes += s.duration;
       totals.activeDays.add(s.date);
@@ -1130,7 +1148,8 @@
     const records = [];
     const maxBy = (list, f) => list.reduce((best, x) => (f(x) > (best ? f(best) : 0) ? x : best), null);
     const far = maxBy(past.filter(s => s.km > 0), s => s.km);
-    if (far) records.push({ id: 'distance', icon: '🛣️', label: 'Plus longue distance', value: far.km, unit: 'km', date: far.date, measured: !!(far.distance && MEASURED_SOURCES.includes(far.distance.source)) });
+    if (far) records.push({ id: 'distance', icon: '🛣️', label: 'Plus longue distance', value: far.km, unit: 'km', date: far.date, measured: !!(far.distance && MEASURED_SOURCES.includes(far.distance.source)),
+      partial: gpsPartial(far), coverage: gpsPartial(far) ? far.gps.coverage : undefined });
     if (Dd.records.maxRun > 0) records.push({ id: 'run', icon: '🏃', label: 'Course continue', value: Dd.records.maxRun, unit: 'min', date: Dd.records.maxRunDate, measured: true });
     const long = maxBy(past.filter(s => s.timing && s.timing.activeSec), s => s.timing.activeSec);
     if (long) records.push({ id: 'long', icon: '⏱️', label: 'Plus longue séance chronométrée', value: round(long.timing.activeSec / 60, 0), unit: 'min', date: long.date, measured: true });
@@ -1312,6 +1331,200 @@
     return { ...Dd, activityXp: Dd.xp, questXp: Qd.xp, xp: cum, level: levelInfo(cum), ledger, levelDates, quests: Qd };
   }
 
+  // ---------- 13. GPS en direct (étape 6.1) ----------
+  // Traitement des positions reçues pendant une séance libre. Principes :
+  //  - une position imprécise (> 25 m) ne compte jamais pour la distance ;
+  //  - un saut impossible (vitesse irréaliste pour une course ou une marche) est rejeté ;
+  //  - les petits mouvements de l'ordre de la précision (téléphone immobile) sont ignorés ;
+  //  - pendant une pause, rien n'est compté ; à la reprise, un nouveau tronçon commence ;
+  //  - si le signal disparaît plus de 20 s (écran verrouillé, tunnel…), le trou n'est JAMAIS
+  //    comblé : aucun kilomètre n'est inventé entre deux tronçons.
+  // Les points sont gardés par tronçon ([t, lat, lon, précision]) pour les futures cartes (6.2).
+  const GPS = {
+    MAX_ACC: 25,                      // m : au-delà, la position ne compte pas
+    GOOD_ACC: 10,                     // m : signal « bon »
+    GAP_MS: 20000,                    // ms sans position : tronçon interrompu
+    LOST_MS: 15000,                   // ms sans position : signal affiché « perdu »
+    MAX_SPEED: { run: 7, walk: 3 },   // m/s (25 et 11 km/h) : au-delà, saut aberrant
+    MIN_MOVE: 3,                      // m : en dessous (ou sous la précision moyenne), immobile
+    MAX_JUMPS: 3,                     // sauts consécutifs avant de repartir d'un nouveau point
+    COVER_MS: 10000,                  // ms : une position exploitable couvre AU PLUS les 10 s qui la précèdent
+    MIN_COVERAGE: 0.8,                // en dessous : suivi partiel, signalé partout
+  };
+  const EARTH_R = 6371008.8;
+  function haversine(a, b) {
+    const rad = x => x * Math.PI / 180;
+    const dLat = rad(b.lat - a.lat), dLon = rad(b.lon - a.lon);
+    const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLon / 2) ** 2;
+    return 2 * EARTH_R * Math.asin(Math.min(1, Math.sqrt(h)));
+  }
+
+  function createTrack(kind) {
+    return {
+      kind: kind === 'walk' ? 'walk' : 'run', segments: [], meters: 0, coveredMs: 0, covered: [],
+      last: null, paused: false, fixes: 0, jumps: 0,
+      rejected: { accuracy: 0, jump: 0 }, gaps: [], lastFixAt: null, lastAcc: null,
+    };
+  }
+  const validFix = f => !!f && [f.t, f.lat, f.lon, f.acc].every(Number.isFinite) && Math.abs(f.lat) <= 90 && Math.abs(f.lon) <= 180 && f.acc >= 0;
+  const pointOf = f => [Math.round(f.t), round(f.lat, 6), round(f.lon, 6), Math.round(f.acc)];
+
+  // Temps couvert : intervalles [début, fin] fusionnés. Deux positions aux extrémités d'un long
+  // intervalle ne suffisent PAS : chaque position exploitable ne couvre que les COVER_MS précédents.
+  function addCovered(tr, from, to) {
+    if (!(to > from)) return;
+    if (!Array.isArray(tr.covered)) tr.covered = [];
+    const c = tr.covered, last = c[c.length - 1];
+    if (last && from <= last[1]) last[1] = Math.max(last[1], to);
+    else c.push([from, to]);
+    tr.coveredMs += to - from;
+  }
+
+  // Ajoute une position. Renvoie la décision : start, move, still, accuracy, jump, gap, paused, old, outside, invalid
+  //   win (facultatif) : { from, to } — une position horodatée hors de la séance n'est jamais comptée
+  function trackAddFix(tr, f, win) {
+    if (!validFix(f)) return 'invalid';
+    if (win && ((Number.isFinite(win.from) && f.t < win.from) || (Number.isFinite(win.to) && f.t > win.to))) return 'outside';
+    tr.fixes++;
+    tr.lastFixAt = f.t;
+    tr.lastAcc = f.acc;
+    if (tr.paused) return 'paused';
+    if (f.acc > GPS.MAX_ACC) { tr.rejected.accuracy++; return 'accuracy'; }
+    const newSegment = () => { tr.segments.push([pointOf(f)]); tr.last = { t: f.t, lat: f.lat, lon: f.lon, acc: f.acc }; tr.jumps = 0; };
+    const last = tr.last;
+    if (!last) { newSegment(); return 'start'; }
+    const dt = f.t - last.t;
+    if (dt <= 0) return 'old';
+    if (dt > GPS.GAP_MS) { tr.gaps.push({ from: last.t, to: f.t }); newSegment(); return 'gap'; }
+    const d = haversine(last, f);
+    // Immobile ou bruit : déplacement inférieur à la précision moyenne des deux positions.
+    // Le point de référence ne bouge pas : un marcheur lent finit par le dépasser, et la distance
+    // accumulée est alors comptée en entier ; un téléphone immobile ne crée jamais de distance.
+    if (d < Math.max(GPS.MIN_MOVE, (last.acc + f.acc) / 2)) {
+      addCovered(tr, f.t - Math.min(dt, GPS.COVER_MS), f.t);
+      tr.last = { ...last, t: f.t, acc: Math.min(last.acc, f.acc) };
+      tr.jumps = 0;
+      return 'still';
+    }
+    if (d / (dt / 1000) > GPS.MAX_SPEED[tr.kind]) {
+      tr.rejected.jump++;
+      tr.jumps++;
+      // Plusieurs « sauts » d'affilée : c'est sans doute le point de référence qui était faux.
+      // On repart du nouveau point SANS compter la distance entre les deux.
+      if (tr.jumps >= GPS.MAX_JUMPS) newSegment();
+      return 'jump';
+    }
+    tr.meters += d;
+    addCovered(tr, f.t - Math.min(dt, GPS.COVER_MS), f.t);
+    tr.segments[tr.segments.length - 1].push(pointOf(f));
+    tr.last = { t: f.t, lat: f.lat, lon: f.lon, acc: f.acc };
+    tr.jumps = 0;
+    return 'move';
+  }
+
+  // Pause de la séance : rien ne compte, la reprise ouvre un nouveau tronçon
+  function trackPause(tr) { tr.paused = true; tr.last = null; return tr; }
+  function trackResume(tr) { tr.paused = false; tr.last = null; return tr; }
+
+  // État du signal affiché : attente, bon, moyen, faible, perdu
+  function gpsSignal(tr, now) {
+    if (!tr || !Number.isFinite(tr.lastFixAt)) return 'attente';
+    if (now - tr.lastFixAt > GPS.LOST_MS) return 'perdu';
+    return tr.lastAcc <= GPS.GOOD_ACC ? 'bon' : tr.lastAcc <= GPS.MAX_ACC ? 'moyen' : 'faible';
+  }
+
+  // Périodes réellement actives d'une séance libre : du départ (après le compte à rebours)
+  // à la fin, moins les pauses enregistrées par le chrono (et la pause en cours).
+  function activePeriods(t, endAt) {
+    const from = t.startedAt, to = endAt;
+    if (!(to > from)) return [];
+    const pauses = (Array.isArray(t.pauses) ? t.pauses : []).filter(p => Array.isArray(p) && p[1] > p[0]).map(p => [p[0], p[1]]);
+    if (t.pausedAt !== null && t.pausedAt < to) pauses.push([t.pausedAt, to]);
+    pauses.sort((x, y) => x[0] - y[0]);
+    const out = []; let cur = from;
+    for (const [a, b] of pauses) {
+      if (b <= cur) continue;
+      if (a >= to) break;
+      if (a > cur) out.push([cur, a]);
+      cur = Math.max(cur, b);
+      if (cur >= to) break;
+    }
+    if (cur < to) out.push([cur, to]);
+    return out;
+  }
+  // Intersection des temps couverts avec les périodes actives, et trous restants
+  function coverageIn(covered, periods) {
+    let coveredMs = 0; const holes = [];
+    for (const [pa, pb] of periods) {
+      let cur = pa;
+      for (const [ca, cb] of covered) {
+        const a = Math.max(ca, pa), b = Math.min(cb, pb);
+        if (b <= a) continue;
+        if (a > cur) holes.push([cur, a]);
+        coveredMs += b - a;
+        cur = Math.max(cur, b);
+      }
+      if (cur < pb) holes.push([cur, pb]);
+    }
+    return { coveredMs, holes };
+  }
+
+  // Bilan : distance mesurée, allure sur le temps couvert par le GPS, couverture de la séance.
+  //   ref   : le chrono libre (calcul exact : départ, pauses et fin pris en compte, positions
+  //           hors séance exclues) — ou, à défaut, une simple durée active en ms.
+  //   endAt : fin de la séance (avec le chrono)
+  // Interruptions : tous les trous de plus de 20 s sans position exploitable pendant la séance
+  // (coupure, écran verrouillé, rechargement, GPS activé en retard, perte en fin de séance).
+  function trackSummary(tr, ref, endAt) {
+    const km = round(tr.meters / 1000, 2);
+    const covered = Array.isArray(tr.covered) ? tr.covered : [];
+    let activeMs, coveredMs, holes = null;
+    if (ref && typeof ref === 'object') {
+      const end = Number.isFinite(endAt) ? endAt : Date.now();
+      activeMs = freeState(ref, end).activeMs;
+      ({ coveredMs, holes } = coverageIn(covered, activePeriods(ref, end)));
+    } else {
+      activeMs = Number.isFinite(ref) ? ref : 0;
+      coveredMs = covered.reduce((a, c) => a + (c[1] - c[0]), 0);
+    }
+    if (activeMs > 0) coveredMs = Math.min(coveredMs, activeMs);
+    // Arrondi vers le bas : 99,6 % ne s'affiche jamais « 100 % »
+    const coverage = activeMs > 0 ? Math.floor(coveredMs / activeMs * 100) / 100 : 0;
+    const big = holes ? holes.filter(h => h[1] - h[0] > GPS.GAP_MS) : null;
+    return {
+      km, coverage, coveredMs, activeMs,
+      uncoveredMs: activeMs > 0 ? activeMs - coveredMs : 0,
+      partial: coverage < GPS.MIN_COVERAGE,
+      paceSecPerKm: km >= 0.05 && coveredMs > 0 ? Math.round(coveredMs / 1000 / km) : null,
+      points: tr.segments.reduce((a, s) => a + s.length, 0), segments: tr.segments.length,
+      gaps: big ? big.length : tr.gaps.length, rejected: tr.rejected.accuracy + tr.rejected.jump,
+    };
+  }
+  // Ce qui est enregistré avec la séance (pas les points : les parcours viendront avec les cartes, 6.2)
+  function gpsSessionInfo(tr, ref, endAt) {
+    const s = trackSummary(tr, ref, endAt);
+    return { coverage: s.coverage, gaps: s.gaps, points: s.points, rejected: s.rejected, uncoveredSec: Math.round(s.uncoveredMs / 1000) };
+  }
+  // Distance GPS d'une séance enregistrée, suivie seulement en partie (moins de 80 %)
+  const gpsPartial = s => !!(s && s.distance && s.distance.source === 'gps' && s.gps && s.gps.coverage < GPS.MIN_COVERAGE);
+
+  function isValidTrack(tr) {
+    return !!tr && typeof tr === 'object' && (tr.kind === 'run' || tr.kind === 'walk') && Array.isArray(tr.segments) &&
+      tr.segments.every(seg => Array.isArray(seg) && seg.every(p => Array.isArray(p) && p.length === 4 && p.every(Number.isFinite))) &&
+      [tr.meters, tr.coveredMs, tr.fixes].every(Number.isFinite) && tr.meters >= 0 && tr.rejected && Array.isArray(tr.gaps) &&
+      (tr.covered === undefined || (Array.isArray(tr.covered) && tr.covered.every(c => Array.isArray(c) && c.length === 2 && c.every(Number.isFinite))));
+  }
+
+  // Messages d'erreur de la géolocalisation (codes standard du navigateur)
+  function gpsErrorMessage(code) {
+    if (code === 1) return 'Localisation refusée : la séance continue sans GPS. Pour l\'autoriser sur iPhone : Réglages › Confidentialité et sécurité › Service de localisation › Sites Safari (ou LEVEL UP).';
+    if (code === 2) return 'Position indisponible pour l\'instant (intérieur, signal faible). La séance continue ; le GPS reprendra dès qu\'un signal sera trouvé.';
+    if (code === 3) return 'Le GPS met du temps à répondre. La séance continue ; la distance comptera dès qu\'un signal sera trouvé.';
+    if (code === 'unsupported') return 'Ce navigateur ne permet pas la géolocalisation. La séance fonctionne sans GPS.';
+    if (code === 'insecure') return 'Le GPS n\'est disponible que sur la version en ligne sécurisée (https).';
+    return 'Erreur de GPS inconnue. La séance continue sans GPS.';
+  }
+
   // ---------- 9. Coach adaptatif ----------
   // Le coach lit les données (ressenti, régularité, séances, récupération, endurance)
   // et PROPOSE. Il ne change jamais le programme tout seul au-delà des règles validées
@@ -1435,6 +1648,7 @@
   }
 
   return {
+    GPS, haversine, createTrack, trackAddFix, trackPause, trackResume, gpsSignal, trackSummary, gpsSessionInfo, gpsPartial, activePeriods, isValidTrack, gpsErrorMessage,
     QUEST_XP, CHAPTERS, EPICS, dailyQuestFor, weeklyQuestsFor, deriveQuests, deriveGame,
     BADGE_CATS, REWARDS, badgeProgress, statsReport, MEASURED_SOURCES, monthKey, shiftMonth,
     XP, WEEKLY_TARGET, LIMITS, LEVELS, PROGRAM, PROGRAM_STEPS, WARMUP, COOLDOWN, BADGES, HEALTHY_PACE, SCHEMA_VERSION, DAY,

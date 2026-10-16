@@ -377,7 +377,7 @@ function renderTrain() {
         <div class="h-ic ${s.type}">${TYPE[s.type].icon}</div>
         <div class="h-main editable" data-action="edit" data-id="${esc(s.id)}" role="button" tabindex="0" aria-label="Modifier cette séance">
           <b>${TYPE[s.type].name}${progTag(s)}${s.mode === 'libre' ? ' · libre ⏱️' : ''}</b>
-          <div>${fmtDate(s.date)} · ${s.duration} min${s.km ? ` · ${fmtNum(s.km)} km` : ''} · ${FEEL[s.feel] || ''}${s.swap ? ' · remplace une course' : ''}</div>
+          <div>${fmtDate(s.date)} · ${s.duration} min${s.km ? ` · ${fmtNum(s.km)} km${s.distance && s.distance.source === 'gps' ? (C.gpsPartial(s) ? ` 📍 partiel (${Math.round(s.gps.coverage * 100)} %)` : ' 📍') : ''}` : ''} · ${FEEL[s.feel] || ''}${s.swap ? ' · remplace une course' : ''}</div>
         </div>
         <span class="badge-xp lime">+${s.xp}</span>
         <button class="h-del" data-action="del" data-id="${esc(s.id)}" aria-label="Supprimer">×</button>
@@ -812,7 +812,7 @@ function renderStats() {
 
     <div class="grid-2">
       <div class="tile"><div class="ic">👣</div><div class="v">${fmtNum(T.km)}<small> km</small></div><div class="l">Distance totale</div>
-        <div class="tile-sub">${T.kmMeasured ? `${fmtNum(T.kmMeasured)} km mesurés · ` : ''}${fmtNum(T.kmManual)} km saisis</div></div>
+        <div class="tile-sub">${T.kmMeasured ? `${fmtNum(T.kmMeasured)} km mesurés${T.kmGpsPartial ? ` (dont ${fmtNum(T.kmGpsPartial)} en GPS partiel)` : ''} · ` : ''}${fmtNum(T.kmManual)} km saisis</div></div>
       <div class="tile"><div class="ic">⏱️</div><div class="v">${fmtDuration(T.minutes)}</div><div class="l">Durée d'activité</div>
         <div class="tile-sub">${T.activeDays} jour${T.activeDays > 1 ? 's' : ''} actif${T.activeDays > 1 ? 's' : ''}</div></div>
       <div class="tile"><div class="ic">🔥</div><div class="v">${T.sessions}</div><div class="l">Séances réalisées</div>
@@ -851,7 +851,7 @@ function renderStats() {
     <div class="section-title"><h2>Records personnels</h2></div>
     <div class="card" style="padding:8px 14px">${rep.records.length ? rep.records.map(r => `
       <div class="rec-row"><span class="ex-ic">${r.icon}</span>
-        <span class="ex-main"><b>${r.label}</b><span class="small muted">${r.week ? `semaine du ${fmtDate(r.date)}` : fmtDate(r.date)} · <span class="tag ${r.measured ? 'measured' : ''}">${r.week ? '📅 cumul' : r.measured ? '⏱️ mesuré' : '✍️ saisi'}</span></span></span>
+        <span class="ex-main"><b>${r.label}</b><span class="small muted">${r.week ? `semaine du ${fmtDate(r.date)}` : fmtDate(r.date)} · <span class="tag ${r.measured && !r.partial ? 'measured' : ''}">${r.week ? '📅 cumul' : r.partial ? `📍 GPS partiel (${Math.round(r.coverage * 100)} %)` : r.measured ? '⏱️ mesuré' : '✍️ saisi'}</span></span></span>
         <b class="rec-v">${fmtNum(r.value)} ${r.unit}</b></div>`).join('')
       : '<p class="small muted">Tes records apparaîtront après tes premières séances.</p>'}
     </div>
@@ -1463,7 +1463,8 @@ function startRunner() {
 }
 
 const persistRunner = () => {
-  if (runner && runner.t) storage.set(TIMER_KEY, JSON.stringify({ t: runner.t, meta: runner.meta, stage: runner.stage, end: runner.end || null, measured: runner.measured || null }));
+  if (runner && runner.t) storage.set(TIMER_KEY, JSON.stringify({ t: runner.t, meta: runner.meta, stage: runner.stage, end: runner.end || null, measured: runner.measured || null,
+    gps: runner.gps && runner.gps.track ? { on: !!runner.gps.on, track: runner.gps.track } : null }));
 };
 
 function showRunner() {
@@ -1481,6 +1482,7 @@ function showRunner() {
 
 function closeRunner() {
   if (!runner) return;
+  gpsStop();
   clearInterval(runner.interval);
   try { if (runner.wake) runner.wake.release(); } catch (e) { /* ignore */ }
   runner = null;
@@ -1734,15 +1736,111 @@ function saveSummary() {
 // ---------- 6 bis. Séance libre (course ou marche au chrono, hors programme) ----------
 // Même écran que le chrono du programme (même design), sans intervalles.
 // Le programme guidé n'avance jamais avec une séance libre.
-// GPS (plus tard) : il suffira de remplir runner.measured = { km, source: 'gps' } pendant
-// la séance ; l'affichage et l'enregistrement l'utiliseront à la place de la saisie manuelle.
+// GPS (étape 6.1) : runner.gps suit les positions ; runner.measured = { km, source: 'gps' }
+// remplace alors la saisie manuelle dans le bilan.
 const FREE_NAME = { run: 'Course libre', walk: 'Marche libre' };
 const FREE_PHASE = { run: 'COURSE LIBRE 🏃', walk: 'MARCHE LIBRE 🚶' };
 const FREE_GO = { run: 'C\'est parti. Cours à ton rythme.', walk: 'C\'est parti. Bonne marche.' };
+// ----- GPS en direct (étape 6.1) -----
+// Facultatif : sans activation, la séance libre fonctionne exactement comme avant.
+// L'autorisation de localisation n'est demandée qu'après un toucher sur « Activer le GPS ».
+// Sur iPhone, Safari suspend la page quand l'écran est verrouillé : le GPS s'arrête aussi.
+// Au retour, la coupure est détectée et la portion non suivie n'est PAS comptée.
+const gpsAvailable = () => 'geolocation' in navigator && window.isSecureContext !== false;
+const GPS_LABEL = { attente: 'Recherche du signal…', bon: 'Signal bon', moyen: 'Signal moyen', faible: 'Signal faible', perdu: 'Signal perdu' };
+
+function gpsStart() {
+  if (!runner || runner.mode !== 'free') return;
+  if (!gpsAvailable()) {
+    runner.gps = { ...(runner.gps || {}), on: false, error: window.isSecureContext === false ? 'insecure' : 'unsupported' };
+    toast('📍', C.gpsErrorMessage(runner.gps.error), 'badge');
+    return refreshGps();
+  }
+  const g = runner.gps || {};
+  runner.gps = { ...g, on: true, error: null, track: g.track && C.isValidTrack(g.track) ? g.track : C.createTrack(runner.kind) };
+  try { if (g.watchId != null) navigator.geolocation.clearWatch(g.watchId); } catch (e) { /* ignore */ }
+  runner.gps.watchId = navigator.geolocation.watchPosition(onGpsFix, onGpsError, { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 });
+  refreshGps();
+}
+
+function gpsStop() {
+  if (!runner || !runner.gps) return;
+  try { if (runner.gps.watchId != null) navigator.geolocation.clearWatch(runner.gps.watchId); } catch (e) { /* ignore */ }
+  runner.gps.watchId = null;
+  runner.gps.on = false;
+}
+
+function onGpsFix(pos) {
+  if (!runner || !runner.gps || !runner.gps.on) return;
+  const c = pos.coords;
+  const f = { t: Number.isFinite(pos.timestamp) ? pos.timestamp : Date.now(), lat: c.latitude, lon: c.longitude, acc: c.accuracy };
+  const tr = runner.gps.track;
+  const counting = runner.stage === 'run' && runner.t && !C.freeState(runner.t, Date.now()).countdown;
+  if (!counting) {
+    // Avant le départ (ou pendant le compte à rebours) : on affiche le signal, rien n'est compté
+    if (Number.isFinite(f.t) && Number.isFinite(f.acc)) { tr.lastFixAt = f.t; tr.lastAcc = f.acc; }
+    return refreshGps();
+  }
+  const res = C.trackAddFix(tr, f, { from: runner.t.startedAt, to: Date.now() + 5000 });
+  if (res === 'gap') {
+    const g = tr.gaps[tr.gaps.length - 1];
+    toast('📍', `Suivi GPS interrompu pendant ${fmtMinSec(g.to - g.from)} (écran verrouillé ou signal perdu) : cette portion n'est pas comptée.`, 'badge');
+  }
+  const km = C.trackSummary(tr, 0).km;
+  runner.measured = km > 0 ? { km, source: 'gps' } : null;
+  if (!runner.gpsSavedAt || Date.now() - runner.gpsSavedAt > 10000) { runner.gpsSavedAt = Date.now(); persistRunner(); }
+  refreshGps();
+}
+
+function onGpsError(err) {
+  if (!runner || !runner.gps) return;
+  runner.gps.error = err && err.code;
+  if (err && err.code === 1) { gpsStop(); toast('📍', C.gpsErrorMessage(1), 'badge'); }
+  refreshGps();
+}
+
+// Bloc GPS de l'écran d'attente
+function gpsBoxHtml() {
+  const g = runner.gps;
+  if (!gpsAvailable()) return `<p class="gps-note">📍 ${C.gpsErrorMessage(window.isSecureContext === false ? 'insecure' : 'unsupported')}</p>`;
+  if (g && g.error === 1) return `<p class="gps-note err">📍 ${C.gpsErrorMessage(1)}</p><button class="btn ghost gps-btn" data-action="gps-on">Réessayer</button>`;
+  if (!g || !g.on) return `<button class="btn ghost gps-btn" data-action="gps-on">📍 Activer le GPS</button>
+    <p class="gps-note">Facultatif. Sans GPS, tout fonctionne comme avant : tu saisiras la distance à la fin. Sur iPhone, le GPS s'arrête si l'écran se verrouille.</p>`;
+  const sig = C.gpsSignal(g.track, Date.now());
+  return `<div class="gps-ready"><span class="gps-chip ${sig}">${GPS_LABEL[sig]}${sig !== 'attente' && sig !== 'perdu' ? ` · ±${Math.round(g.track.lastAcc)} m` : ''}</span>
+    <button class="link-btn" data-action="gps-off">Désactiver</button></div>
+    <p class="gps-note">${sig === 'bon' || sig === 'moyen' ? 'Prêt : la distance comptera dès le départ.' : 'Attends un signal « bon » à l\'extérieur pour plus de précision.'}</p>`;
+}
+
+// Panneau GPS pendant la séance : distance, allure, signal
+function gpsPanelHtml(now) {
+  const g = runner.gps;
+  if (!g || !g.on) {
+    const resume = g && g.track && g.track.fixes > 0;
+    return `<button class="gps-off" data-action="gps-on">📍 ${resume ? 'Reprendre le GPS' : 'Activer le GPS'}${g && g.error === 1 ? ' (refusé)' : ''}</button>`;
+  }
+  const s = C.trackSummary(g.track, 0), sig = C.gpsSignal(g.track, now);
+  const pace = s.paceSecPerKm ? `${Math.floor(s.paceSecPerKm / 60)}'${String(s.paceSecPerKm % 60).padStart(2, '0')}` : '—';
+  return `<div><b>${fmtNum(s.km, 2)}</b><span>km GPS</span></div>
+    <div><b>${pace}</b><span>allure /km</span></div>
+    <div><b class="gps-chip ${sig}">${sig === 'attente' ? '…' : sig === 'perdu' ? '⚠️' : `±${Math.round(g.track.lastAcc)} m`}</b><span>${GPS_LABEL[sig].replace('Signal ', 'signal ')}</span></div>`;
+}
+
+function refreshGps() {
+  if (!runner || runner.mode !== 'free') return;
+  if (runner.stage === 'ready' && $('#gpsBox')) $('#gpsBox').innerHTML = gpsBoxHtml();
+  if (runner.stage === 'run' && $('#gpsPanel')) {
+    const html = gpsPanelHtml(Date.now());
+    const el = $('#gpsPanel');
+    if (el.dataset.html !== html) { el.innerHTML = html; el.dataset.html = html; }
+    el.classList.toggle('on', !!(runner.gps && runner.gps.on));
+  }
+}
+
 
 function startFree(kind) {
   if (runner) return showRunner(); // un seul chrono à la fois
-  runner = { mode: 'free', kind: kind === 'walk' ? 'walk' : 'run', stage: 'ready', meta: {}, measured: null };
+  runner = { mode: 'free', kind: kind === 'walk' ? 'walk' : 'run', stage: 'ready', meta: {}, measured: null, gps: null };
   showRunner();
 }
 
@@ -1758,6 +1856,7 @@ function drawFreeReady() {
       <div class="phase">${FREE_PHASE[runner.kind]}</div>
       <div class="time">0:00</div>
       <div class="next">À ton rythme, sans intervalles. Elle compte pour tes statistiques, ton XP${runner.kind === 'run' ? ' et tes records' : ''}, mais ne fait pas avancer le programme guidé.</div>
+      <div class="gps-box" id="gpsBox">${gpsBoxHtml()}</div>
     </div>
     <div class="r-ctrl">
       <button class="btn ghost" data-action="runner-cancel">✕ Annuler</button>
@@ -1785,8 +1884,9 @@ function buildFree() {
     <div class="r-stats">
       <span>⏸ <b id="rPause">0:00</b> de pause</span>
       ${runner.kind === 'run' ? '<span>🏃 <b id="rLongest">0:00</b> sans pause</span>' : '<span></span>'}
-      <span id="rDist">${runner.measured ? '' : '📍 distance à la fin'}</span>
+      <span></span>
     </div>
+    <div class="gps-panel" id="gpsPanel"></div>
     <div class="r-mid">
       <div class="eyebrow" id="rLabel"></div>
       <div class="phase" id="rPhase"></div>
@@ -1835,7 +1935,16 @@ function updateFree(st) {
     set('rNext', st.paused ? 'Reprends quand tu es prêt.' : 'Termine quand tu veux.');
     set('rPause', fmtClock(st.pausedMs));
     if (runner.kind === 'run') set('rLongest', fmtClock(st.longestMs));
-    if (runner.measured) set('rDist', `📍 ${fmtNum(runner.measured.km, 2)} km`);
+    refreshGps();
+    // Signal GPS perdu pendant la course : la distance est en pause, on le dit clairement
+    const g = runner.gps;
+    if (g && g.on && !st.paused) {
+      const sig = C.gpsSignal(g.track, Date.now());
+      const h = $('#rHint');
+      if (h) h.textContent = sig === 'perdu' ? '📍 Signal GPS perdu : la distance ne compte plus jusqu\'au retour du signal (aucun kilomètre n\'est inventé).'
+        : sig === 'faible' ? '📍 Signal GPS faible : les positions imprécises ne sont pas comptées.' : '';
+      if (h && !h.textContent) updateHint();
+    }
   }
   if (runner.ctrlKey !== mode) {
     runner.ctrlKey = mode;
@@ -1856,6 +1965,7 @@ function endFree(stopped) {
   runner.wake = null;
   runner.stage = 'summary';
   runner.end = { at: now, stopped };
+  gpsStop(); // plus de localisation après la fin de la séance
   persistRunner();
   beep(660, 0.15); setTimeout(() => beep(990, 0.3), 160); vibrate([100, 50, 100, 50, 300]); speak(C.CUES.done);
   drawFreeSummary();
@@ -1867,21 +1977,33 @@ function freeEntry() {
   const kmText = f ? f.distance.value.trim() : '';
   const km = kmText ? Math.round(parseDec(kmText) * 100) / 100 : 0;
   const duration = f ? Math.round(parseFloat(f.duration.value)) : NaN;
-  const entry = C.freeSessionEntry(runner.t, runner.end.at, { duration, km: Number.isFinite(km) ? km : 0, feel: f ? +f.feel.value : 2, measured: runner.measured });
-  return { entry, km, st: C.freeState(runner.t, runner.end.at) };
+  const st = C.freeState(runner.t, runner.end.at);
+  const tr = runner.gps && runner.gps.track && runner.gps.track.fixes > 0 ? runner.gps.track : null;
+  const entry = C.freeSessionEntry(runner.t, runner.end.at, { duration, km: Number.isFinite(km) ? km : 0, feel: f ? +f.feel.value : 2, measured: runner.measured,
+    gps: tr ? C.gpsSessionInfo(tr, runner.t, runner.end.at) : undefined });
+  return { entry, km, st, gps: tr ? C.trackSummary(tr, runner.t, runner.end.at) : null };
 }
 
 function drawFreeSummary() {
   const r = $('#runner');
   r.className = 'runner open summary';
-  const { st, entry } = freeEntry();
+  const { st, entry, gps } = freeEntry();
   const tooShort = st.activeMs < 60000;
+  const plural = (n, w) => `${n} ${w}${n > 1 ? 's' : ''}`;
+  const gpsHtml = !gps ? '' : gps.km > 0
+    ? `<div class="sum-status ${gps.partial ? 'ko' : 'ok'} gps-sum">📍 <b>Distance GPS enregistrée : ${fmtNum(gps.km, 2)} km</b>
+        <br>Séance couverte par le GPS : <b>${Math.round(gps.coverage * 100)} %</b>${gps.uncoveredMs >= 60000 ? ` (${fmtMinSec(gps.uncoveredMs)} sans position exploitable)` : ''}
+        ${gps.gaps ? `<br>${plural(gps.gaps, 'interruption')} du suivi (coupure, écran verrouillé, rechargement ou signal perdu).` : ''}
+        ${gps.rejected ? `<br>${plural(gps.rejected, 'position')} imprécise${gps.rejected > 1 ? 's' : ''} ignorée${gps.rejected > 1 ? 's' : ''}.` : ''}
+        ${gps.partial ? `<br>⚠️ <b>Couverture insuffisante</b> (moins de 80 %) : ta distance réelle est sans doute plus longue, mais seuls les ${fmtNum(gps.km, 2)} km suivis sont enregistrés — rien n'est ajouté. La séance sera marquée « GPS partiel ». Si tu corriges la distance, elle sera marquée « saisie », et la mesure GPS d\'origine sera gardée.` : ''}</div>`
+    : '<div class="sum-status ko">📍 <b>Aucune distance GPS mesurée</b> (signal insuffisant ou interrompu). Tu peux saisir la distance : elle sera marquée « saisie ».</div>';
   const measuredMin = Math.max(1, Math.round(st.activeMs / 60000));
   r.innerHTML = `
     <div class="sum-box">
       <div class="eyebrow">Séance libre · hors programme</div>
       <h1>${FREE_NAME[runner.kind]} terminée 🎉</h1>
       <div class="sum-status ok">⏱️ <b>Mesurée par le chrono</b> : elle compte pour tes statistiques et ton XP${runner.kind === 'run' ? ', et la plus longue course sans pause peut battre ton record' : ''}. Le programme guidé reste à la même étape.</div>
+      ${gpsHtml}
       ${st.capped ? '<p class="ob-err">Le chrono est resté ouvert très longtemps : vérifie la durée avant d\'enregistrer.</p>' : ''}
       <div class="grid-2">
         <div class="tile accent"><div class="v">${fmtMinSec(st.activeMs)}</div><div class="l">Durée réelle</div></div>
@@ -1917,9 +2039,11 @@ const fmtPace = (minutes, km) => {
 
 function updateFreeSummary() {
   if (!runner || runner.stage !== 'summary' || !$('#sumForm')) return;
-  const { entry, km } = freeEntry();
+  const { entry, km, gps } = freeEntry();
   const dist = entry.distance ? entry.distance.km : 0;
-  $('#sumPace').textContent = fmtPace(entry.timing.activeSec / 60, dist);
+  // Distance GPS non corrigée : allure calculée sur le temps réellement suivi par le GPS
+  const gpsPace = gps && entry.distance && entry.distance.source === 'gps' && gps.paceSecPerKm;
+  $('#sumPace').textContent = gpsPace ? `${Math.floor(gps.paceSecPerKm / 60)}'${String(gps.paceSecPerKm % 60).padStart(2, '0')} /km` : fmtPace(entry.timing.activeSec / 60, dist);
   $('#sumNote').textContent = entry.feel >= 3 ? 'Noté : le coach en tiendra compte pour ta récupération.' : '';
   const xp = summaryXP(Number.isFinite(km) ? entry : { ...entry, distance: undefined });
   $('#sumSave').textContent = `Enregistrer · +${xp} XP ⚡`;
@@ -1938,8 +2062,11 @@ function saveFreeSummary() {
 
 function restoreFree(saved) {
   if (!C.isValidFreeTimer(saved.t) || Date.now() - saved.t.startedAt > 24 * 3600e3) throw new Error('chrono libre périmé');
-  runner = { mode: 'free', kind: saved.t.kind, t: saved.t, meta: {}, measured: saved.measured || null,
-    stage: saved.stage === 'summary' && saved.end ? 'summary' : 'run', end: saved.end || null };
+  const gt = saved.gps && C.isValidTrack(saved.gps.track) ? saved.gps.track : null;
+  runner = { mode: 'free', kind: saved.t.kind, t: saved.t, meta: {}, measured: gt ? saved.measured || null : null,
+    stage: saved.stage === 'summary' && saved.end ? 'summary' : 'run', end: saved.end || null,
+    // Le GPS doit être relancé d'un toucher (« Reprendre le GPS ») : la portion manquée ne sera pas comptée
+    gps: gt ? { on: false, track: gt, watchId: null, error: null } : null };
   if (runner.stage === 'run') runner.marks = C.freeResumeMarks(runner.t, Date.now());
   showRunner();
   if (runner && runner.stage === 'run') toast('⏱', `${FREE_NAME[runner.kind]} en cours reprise`, 'badge');
@@ -2005,11 +2132,15 @@ document.addEventListener('click', e => {
     case 'runner': return startRunner();
     case 'free': return startFree(a.dataset.kind);
     case 'free-start': return beginFree();
+    case 'gps-on': return gpsStart();
+    case 'gps-off': gpsStop(); return refreshGps();
     case 'runner-pause': {
       if (!runner || runner.stage !== 'run') return;
       const now = Date.now();
       const resume = runner.t.pausedAt !== null;
       if (resume) C.timerResume(runner.t, now); else C.timerPause(runner.t, now);
+      // GPS : rien n'est compté pendant la pause ; la reprise ouvre un nouveau tronçon
+      if (runner.gps && runner.gps.track) { if (resume) C.trackResume(runner.gps.track); else C.trackPause(runner.gps.track); }
       persistRunner();
       speak(resume ? C.CUES.resumed : C.CUES.paused);
       return tickRunner();
@@ -2145,7 +2276,11 @@ setInterval(checkDay, 60000);
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') { persistRunner(); return; }
   checkDay();
-  if (runner && runner.stage === 'run') { requestWake(); tickRunner(); }
+  if (runner && runner.stage === 'run') {
+    requestWake();
+    if (runner.gps && runner.gps.on) gpsStart(); // relance la localisation (la coupure sera détectée)
+    tickRunner();
+  }
 });
 
 // Mise à jour de l'application (PWA) : on propose, on n'impose pas

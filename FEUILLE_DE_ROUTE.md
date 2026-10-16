@@ -29,12 +29,23 @@ sauvegarde avant toute migration, tests automatisés, compte rendu à chaque ét
 - Hébergement HTTPS gratuit (GitHub Pages) pour installer la PWA sur l'iPhone 17 Pro.
 - Vérification réelle de la voix, des bips, de l'écran maintenu allumé.
 
-### Séance libre — suite (avec la phase Capacitor)
-- ✅ Fait en PWA (étape 4.5) : chrono, bilan, distance saisie à la main.
-- À venir : distance mesurée automatiquement par le GPS. C'est déjà prévu dans le code :
-  le chrono libre accepte une distance « mesurée » (`runner.measured = { km, source: 'gps' }`)
-  qui remplace la saisie ; une saisie différente est gardée comme correction, avec la mesure d'origine.
-- Allure en direct et parcours sur carte quand le GPS sera disponible.
+### Étape 6.1 — GPS en direct ✅ (version 2.7.2, en attente de validation)
+- Bouton « Activer le GPS » facultatif en course et marche libres (autorisation demandée après un toucher).
+- Distance GPS, allure moyenne, durée et précision du signal pendant la séance.
+- Positions imprécises (> 25 m) et sauts aberrants ignorés ; rien n'est compté pendant la pause.
+- Coupures (écran verrouillé, signal perdu) détectées et jamais comptées ; message explicite.
+- Distance marquée `gps` (📍 dans le journal) ; une correction manuelle reste marquée « saisie ».
+- Couverture = temps réellement couvert par des positions exploitables (chacune couvre au plus 10 s),
+  hors pauses, hors positions datées en dehors de la séance ; coupures, rechargement et perte en fin
+  de séance comptés comme interruptions. Sous 80 % : « GPS partiel » (bilan, journal, records).
+- Résumé `gps { coverage, gaps, points, rejected, uncoveredSec }` enregistré avec la séance.
+- Limite PWA : sur iPhone, le GPS s'arrête quand l'écran est verrouillé (il faut Capacitor).
+
+### Étape 6.2 — Cartes de parcours (à venir)
+- Conserver les points GPS (base séparée, IndexedDB) et afficher le tracé.
+
+### Étape 6.3 — Application native (à venir)
+- Capacitor : GPS en arrière-plan, podomètre, Apple Santé.
 
 ## Phase application iPhone (Capacitor)
 

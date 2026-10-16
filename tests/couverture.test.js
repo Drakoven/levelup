@@ -152,7 +152,8 @@ test('couverture inférieure à 80 % : séance marquée GPS partiel, distance ja
   // Sauvegarde puis import : le résumé (avec le temps non suivi) est conservé
   const { data } = C.normalizeData({ profile: { name: 'A', startWeight: 95, goalWeight: 80, height: 170, startDate: '2026-10-15', endDate: '2027-06-01' }, sessions: [{ id: 'a1', ...e }] });
   const back = C.normalizeData(JSON.parse(C.serialize(data))).data;
-  assert.deepEqual(back.sessions[0].gps, { coverage: 0.7, gaps: 1, points: 141, rejected: 0, uncoveredSec: 180 });
+  assert.deepEqual(back.sessions[0].gps, { coverage: 0.7, gaps: 1, points: 141, rejected: 0, uncoveredSec: 180,
+    diag: { kept: 141, still: 0, accuracy: 0, jump: 0, time: 0, paused: 0, other: 0 } });
   assert.equal(C.gpsPartial(back.sessions[0]), true);
 });
 

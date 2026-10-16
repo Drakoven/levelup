@@ -417,6 +417,8 @@ function refreshAssist() {
   if (box) box.innerHTML = voiceList();
 }
 
+const ANNOUNCE_LABEL = m => (m ? (m === 60 ? 'Toutes les 60 minutes' : `Toutes les ${m} minutes`) : 'Désactivées');
+
 function assistCard() {
   const chk = (key, label) => `<label class="check"><input type="checkbox" data-setting="${key}" ${settings[key] ? 'checked' : ''}> ${label}</label>`;
   return `<div class="section-title"><h2>Assistant de course</h2></div>
@@ -426,6 +428,10 @@ function assistCard() {
       <div id="voiceBox">${voiceList()}</div>
       <label class="f" style="margin-top:12px">Vitesse de la voix · <span id="rateLabel">${rateLabel(settings.voiceRate)}</span><input type="range" min="${C.VOICE_RATE[0]}" max="${C.VOICE_RATE[1]}" step="0.05" data-setting="voiceRate" value="${settings.voiceRate}"></label>
       <label class="f">Volume de la voix<input type="range" min="0.2" max="1" step="0.1" data-setting="voiceVolume" value="${settings.voiceVolume}"></label>
+      <label class="f">Fréquence des annonces
+        <select data-setting="announceEvery">${C.ANNOUNCE_CHOICES.map(m => `<option value="${m}" ${settings.announceEvery === m ? 'selected' : ''}>${ANNOUNCE_LABEL(m)}</option>`).join('')}</select>
+      </label>
+      <p class="small muted" style="margin:-6px 0 12px">Temps écoulé annoncé pendant la course et la marche libres. Le début et la fin de séance sont toujours annoncés ; les programmes guidés gardent toutes leurs annonces.</p>
       ${chk('sounds', '🔔 Bips sonores')}
       ${chk('warn10', '⏳ Alerte 10 secondes avant chaque changement')}
       ${chk('countdown', '5️⃣ Compte à rebours de 5 secondes')}
@@ -1822,7 +1828,7 @@ function gpsPanelHtml(now) {
   const s = C.trackSummary(g.track, 0), sig = C.gpsSignal(g.track, now);
   const pace = s.paceSecPerKm ? `${Math.floor(s.paceSecPerKm / 60)}'${String(s.paceSecPerKm % 60).padStart(2, '0')}` : '—';
   return `<div><b>${fmtNum(s.km, 2)}</b><span>km GPS</span></div>
-    <div><b>${pace}</b><span>allure /km</span></div>
+    <div><b>${pace}</b><span>allure GPS /km</span></div>
     <div><b class="gps-chip ${sig}">${sig === 'attente' ? '…' : sig === 'perdu' ? '⚠️' : `±${Math.round(g.track.lastAcc)} m`}</b><span>${GPS_LABEL[sig].replace('Signal ', 'signal ')}</span></div>`;
 }
 
@@ -1902,14 +1908,14 @@ function buildFree() {
 
 function tickFree() {
   if (!runner || runner.stage !== 'run') return;
-  const { st, events, marks } = C.freeCues(runner.t, runner.marks, Date.now());
+  const { st, events, marks } = C.freeCues(runner.t, runner.marks, Date.now(), settings.announceEvery);
   runner.marks = marks;
   for (const ev of events) {
     // Palier ou départ manqué pendant la suspension (iPhone verrouillé) : pas d'annonce en retard
     if (ev.late) continue;
     if (ev.type === 'countdown') { beep(ev.n === 1 ? 990 : 660, 0.12); vibrate(60); if (ev.n <= 3) speak(String(ev.n)); }
     else if (ev.type === 'start') { beep(990, 0.4); vibrate([200, 100, 200]); if (settings.countdown) speak(FREE_GO[runner.kind]); }
-    else if (ev.type === 'milestone') { beep(880, 0.2); vibrate(150); speak(`${ev.minutes} minutes.`); }
+    else if (ev.type === 'milestone') { beep(880, 0.2); vibrate(150); speak(`${C.spokenElapsed(ev.minutes)}.`); }
     else if (ev.type === 'capped') { toast('⏱', 'Chrono arrêté automatiquement après 10 h', 'badge'); return endFree(true); }
   }
   updateFree(st);
@@ -1984,6 +1990,16 @@ function freeEntry() {
   return { entry, km, st, gps: tr ? C.trackSummary(tr, runner.t, runner.end.at) : null };
 }
 
+// Détail de chaque position reçue (diagnostic des tests sur le terrain)
+function gpsDiagHtml(dg) {
+  if (!dg) return '';
+  const total = C.DIAG_KEYS.reduce((a, k) => a + (dg[k] || 0), 0);
+  const row = (label, k) => `<li><span>${label}</span><b>${dg[k] || 0}</b></li>`;
+  return `<details class="gps-diag"><summary>Détails GPS (${total} position${total > 1 ? 's' : ''} reçue${total > 1 ? 's' : ''})</summary><ul>
+    ${row('Retenues', 'kept')}${row('Ignorées : immobilité', 'still')}${row('Rejetées : précision insuffisante', 'accuracy')}
+    ${row('Rejetées : vitesse aberrante', 'jump')}${row('Rejetées : horodatage', 'time')}${row('Reçues pendant une pause', 'paused')}${row('Autres rejets', 'other')}</ul></details>`;
+}
+
 function drawFreeSummary() {
   const r = $('#runner');
   r.className = 'runner open summary';
@@ -1995,6 +2011,7 @@ function drawFreeSummary() {
         <br>Séance couverte par le GPS : <b>${Math.round(gps.coverage * 100)} %</b>${gps.uncoveredMs >= 60000 ? ` (${fmtMinSec(gps.uncoveredMs)} sans position exploitable)` : ''}
         ${gps.gaps ? `<br>${plural(gps.gaps, 'interruption')} du suivi (coupure, écran verrouillé, rechargement ou signal perdu).` : ''}
         ${gps.rejected ? `<br>${plural(gps.rejected, 'position')} imprécise${gps.rejected > 1 ? 's' : ''} ignorée${gps.rejected > 1 ? 's' : ''}.` : ''}
+        ${gpsDiagHtml(gps.diag)}
         ${gps.partial ? `<br>⚠️ <b>Couverture insuffisante</b> (moins de 80 %) : ta distance réelle est sans doute plus longue, mais seuls les ${fmtNum(gps.km, 2)} km suivis sont enregistrés — rien n'est ajouté. La séance sera marquée « GPS partiel ». Si tu corriges la distance, elle sera marquée « saisie », et la mesure GPS d\'origine sera gardée.` : ''}</div>`
     : '<div class="sum-status ko">📍 <b>Aucune distance GPS mesurée</b> (signal insuffisant ou interrompu). Tu peux saisir la distance : elle sera marquée « saisie ».</div>';
   const measuredMin = Math.max(1, Math.round(st.activeMs / 60000));
@@ -2011,8 +2028,9 @@ function drawFreeSummary() {
         ${runner.kind === 'run'
           ? `<div class="tile"><div class="v" style="color:var(--lime)">${fmtMinSec(entry.timing.maxRunSec * 1000)}</div><div class="l">Plus long sans pause</div></div>`
           : `<div class="tile"><div class="v" style="color:var(--cyan)">${fmtMinSec(st.activeMs)}</div><div class="l">Temps de marche</div></div>`}
-        <div class="tile"><div class="v" id="sumPace">—</div><div class="l">Allure moyenne</div></div>
+        <div class="tile"><div class="v" id="sumPace">—</div><div class="l" id="sumPaceL">Allure moyenne</div></div>
       </div>
+      <p class="small muted pace-note" id="sumPaceNote"></p>
       ${tooShort ? '<p class="ob-err" style="margin-top:14px">Moins d\'une minute d\'effort : rien à enregistrer.</p>' : `
       <form id="sumForm" novalidate style="margin-top:16px">
         <div class="grid-2">
@@ -2044,6 +2062,13 @@ function updateFreeSummary() {
   // Distance GPS non corrigée : allure calculée sur le temps réellement suivi par le GPS
   const gpsPace = gps && entry.distance && entry.distance.source === 'gps' && gps.paceSecPerKm;
   $('#sumPace').textContent = gpsPace ? `${Math.floor(gps.paceSecPerKm / 60)}'${String(gps.paceSecPerKm % 60).padStart(2, '0')} /km` : fmtPace(entry.timing.activeSec / 60, dist);
+  // Libellé : allure GPS (temps suivi seulement) ou allure de la séance complète (distance saisie)
+  $('#sumPaceL').textContent = !gpsPace ? (dist > 0 ? 'Allure moyenne (séance complète)' : 'Allure moyenne')
+    : gps.partial ? `Allure GPS · ${fmtMinSec(gps.coveredMs)} suivies` : 'Allure GPS';
+  const pn = $('#sumPaceNote');
+  if (pn) pn.textContent = gpsPace && gps.partial
+    ? `Allure GPS calculée uniquement sur la portion suivie (${fmtMinSec(gps.coveredMs)} sur ${fmtMinSec(gps.activeMs)}). L'allure de la séance complète n'est pas calculable : la distance n'a pas été mesurée pendant ${fmtMinSec(gps.uncoveredMs)}.`
+    : '';
   $('#sumNote').textContent = entry.feel >= 3 ? 'Noté : le coach en tiendra compte pour ta récupération.' : '';
   const xp = summaryXP(Number.isFinite(km) ? entry : { ...entry, distance: undefined });
   $('#sumSave').textContent = `Enregistrer · +${xp} XP ⚡`;
@@ -2067,7 +2092,7 @@ function restoreFree(saved) {
     stage: saved.stage === 'summary' && saved.end ? 'summary' : 'run', end: saved.end || null,
     // Le GPS doit être relancé d'un toucher (« Reprendre le GPS ») : la portion manquée ne sera pas comptée
     gps: gt ? { on: false, track: gt, watchId: null, error: null } : null };
-  if (runner.stage === 'run') runner.marks = C.freeResumeMarks(runner.t, Date.now());
+  if (runner.stage === 'run') runner.marks = C.freeResumeMarks(runner.t, Date.now(), settings.announceEvery);
   showRunner();
   if (runner && runner.stage === 'run') toast('⏱', `${FREE_NAME[runner.kind]} en cours reprise`, 'badge');
 }
@@ -2254,6 +2279,9 @@ document.addEventListener('change', e => {
   settings = C.normSettings({ ...settings, [key]: value });
   saveSettings();
   updateIcons();
+  // Fréquence changée pendant une séance libre : ni annonce rétroactive, ni doublon
+  if (key === 'announceEvery' && runner && runner.mode === 'free' && runner.stage === 'run' && runner.marks)
+    runner.marks = C.freeRetuneMarks(runner.t, runner.marks, Date.now(), settings.announceEvery);
   if (key === 'voiceVolume' || key === 'voiceRate') speak('Voici la nouvelle voix du coach.', true);
 });
 window.addEventListener('hashchange', () => go(location.hash.slice(1)));

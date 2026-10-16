@@ -155,7 +155,8 @@ test('séance libre avec GPS : distance « gps », mesurée, résumé conservé'
   const e = C.freeSessionEntry(t, T0 + 1500 * SEC, { measured: { km: C.trackSummary(tr, 1500 * SEC).km, source: 'gps' }, gps: info });
   assert.equal(e.distance.source, 'gps');
   assert.ok(Math.abs(e.distance.km - 4.5) < 0.02);
-  assert.deepEqual(e.gps, { coverage: 1, gaps: 0, points: 501, rejected: 0, uncoveredSec: 0 });
+  assert.deepEqual(e.gps, { coverage: 1, gaps: 0, points: 501, rejected: 0, uncoveredSec: 0,
+    diag: { kept: 501, still: 0, accuracy: 0, jump: 0, time: 0, paused: 0, other: 0 } });
   // Corrigée à la main : marquée comme saisie, mesure GPS d'origine gardée
   const fixed = C.freeSessionEntry(t, T0 + 1500 * SEC, { km: 4.3, measured: { km: 4.5, source: 'gps' }, gps: info });
   assert.deepEqual(fixed.distance, { km: 4.3, source: 'manuel', measuredKm: 4.5, corrected: true });

@@ -41,6 +41,14 @@ sauvegarde avant toute migration, tests automatisés, compte rendu à chaque ét
 - Résumé `gps { coverage, gaps, points, rejected, uncoveredSec }` enregistré avec la séance.
 - Limite PWA : sur iPhone, le GPS s'arrête quand l'écran est verrouillé (il faut Capacitor).
 
+### Version 2.8.0 — Coach vocal et diagnostic GPS (en attente de validation)
+- Réglage « Fréquence des annonces » (désactivées, 5, 10, 15, 30, 60 min ; 30 min par défaut)
+  pour le temps écoulé en course et marche libres. Début et fin toujours annoncés ; programmes
+  guidés inchangés. Paliers sur le temps actif réel, jamais rejoués en retard.
+- Détails GPS dans le bilan : positions retenues, immobiles, rejetées (précision, vitesse,
+  horodatage), reçues en pause, autres. Allure GPS distinguée de l'allure de la séance complète.
+- Défaut du filtre de vitesse reproduit par des tests (« à faire ») ; correction après test réel.
+
 ### Étape 6.2 — Cartes de parcours (à venir)
 - Conserver les points GPS (base séparée, IndexedDB) et afficher le tracé.
 

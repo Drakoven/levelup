@@ -640,6 +640,12 @@
         out.gps = { coverage: cov, gaps: ints[0], points: ints[1], rejected: ints[2] };
         const u = Math.round(num(g.uncoveredSec));
         if (inRange(u, [0, 36000])) out.gps.uncoveredSec = u;
+        // Compteurs de diagnostic (facultatifs)
+        if (g.diag && typeof g.diag === 'object') {
+          const dg = {};
+          for (const k of DIAG_KEYS) { const v = Math.round(num(g.diag[k])); if (inRange(v, [0, 1e6])) dg[k] = v; }
+          if (Object.keys(dg).length === DIAG_KEYS.length) out.gps.diag = dg;
+        }
       }
     }
     if (raw.type === 'walk' && raw.swap === true) out.swap = true; // marche faite à la place d'une course
@@ -871,6 +877,14 @@
     return s ? `${mm} ${s}` : mm;
   }
 
+  // Temps écoulé annoncé en séance libre : « 30 minutes », « 1 heure », « 1 heure 30 », « 2 heures »
+  function spokenElapsed(minutes) {
+    const m = Math.max(0, Math.round(minutes)), h = Math.floor(m / 60), r = m % 60;
+    if (!h) return m === 1 ? '1 minute' : `${m} minutes`;
+    const hh = h === 1 ? '1 heure' : `${h} heures`;
+    return r ? `${hh} ${r}` : hh;
+  }
+
   const CUES = { ready: 'Prépare-toi.', done: 'Séance terminée. Bravo !', paused: 'Pause.', resumed: 'C\'est reparti.' };
 
   function phaseCue(seg) {
@@ -939,7 +953,11 @@
   }
 
   // Réglages de l'assistant (stockés sur l'appareil, hors sauvegarde)
-  const DEFAULT_SETTINGS = { voice: true, voiceVolume: 1, voiceName: '', voiceURI: '', voiceRate: 1, sounds: true, vibration: true, warn10: true, countdown: true };
+  // Fréquence des annonces du temps écoulé en séance libre (minutes ; 0 = désactivées).
+  // Les annonces de début et de fin, et toutes celles des programmes guidés, ne dépendent pas de ce réglage.
+  const ANNOUNCE_CHOICES = [0, 5, 10, 15, 30, 60];
+  const ANNOUNCE_DEFAULT = 30;
+  const DEFAULT_SETTINGS = { voice: true, voiceVolume: 1, voiceName: '', voiceURI: '', voiceRate: 1, sounds: true, vibration: true, warn10: true, countdown: true, announceEvery: ANNOUNCE_DEFAULT };
   const VOICE_RATE = [0.7, 1.3]; // vitesse de parole autorisée (1 = normale)
   function normSettings(raw) {
     const r = raw && typeof raw === 'object' ? raw : {};
@@ -951,6 +969,10 @@
     if (typeof r.voiceURI === 'string') out.voiceURI = r.voiceURI.slice(0, 200);
     const rate = num(r.voiceRate);
     if (inRange(rate, VOICE_RATE)) out.voiceRate = round(rate, 2);
+    // Migration : les anciens réglages n'ont pas de fréquence → 30 min par défaut.
+    // Un choix enregistré (y compris « désactivées ») est toujours conservé.
+    const every = num(r.announceEvery);
+    if (ANNOUNCE_CHOICES.includes(every)) out.announceEvery = every;
     return out;
   }
 
@@ -1023,29 +1045,46 @@
     };
   }
 
-  // Annonces : compte à rebours, départ, puis toutes les 5 minutes
-  const freeInitialMarks = () => ({ count: null, started: false, milestone: 0 });
+  // Annonces : compte à rebours, départ, puis le temps écoulé à la fréquence choisie (everyMin ;
+  // 0 = aucune annonce périodique). Les paliers suivent le temps réel du chrono (pas de dérive).
+  //   marks.lastMin : dernier palier atteint, en minutes de séance (évite doublons et annonces
+  //                   rétroactives, même si la fréquence change pendant la séance)
+  //   marks.milestone : nombre de paliers de la fréquence en cours (compatibilité)
+  const freeInitialMarks = () => ({ count: null, started: false, milestone: 0, lastMin: 0 });
+  const validEvery = everyMin => (ANNOUNCE_CHOICES.includes(everyMin) || (Number.isFinite(everyMin) && everyMin > 0) ? everyMin : 0);
+  const reachedMin = (activeMs, everyMin) => everyMin > 0 ? Math.floor(activeMs / (everyMin * 60000)) * everyMin : 0;
   function freeCues(t, marks, now, everyMin = FREE_MILESTONE_MIN) {
     const st = freeState(t, now), events = [], m = { ...marks };
+    const every = validEvery(everyMin);
+    if (!Number.isFinite(m.lastMin)) m.lastMin = (m.milestone || 0) * FREE_MILESTONE_MIN; // anciennes marques
     if (st.countdown) {
       if (m.count !== st.countdownSec) { m.count = st.countdownSec; events.push({ type: 'countdown', n: st.countdownSec }); }
       return { st, events, marks: m };
     }
     if (!m.started) { m.started = true; events.push({ type: 'start', late: st.activeMs > LATE_MS }); }
-    const reached = everyMin > 0 ? Math.floor(st.activeMs / (everyMin * 60000)) : 0;
-    if (reached > m.milestone) {
-      // Palier franchi pendant la suspension (ex. 5 min, déverrouillage à 8 min) :
-      // marqué « late » et jamais annoncé ; le prochain palier (10 min) le sera normalement.
-      m.milestone = reached;
-      const sinceMs = st.activeMs - reached * everyMin * 60000;
-      events.push({ type: 'milestone', minutes: reached * everyMin, late: sinceMs > LATE_MS });
+    const reached = reachedMin(st.activeMs, every);
+    if (reached > m.lastMin) {
+      // Palier franchi pendant la suspension (ex. 30 min, déverrouillage à 33 min) :
+      // marqué « late » et jamais annoncé ; le prochain palier le sera normalement.
+      m.lastMin = reached;
+      const sinceMs = st.activeMs - reached * 60000;
+      events.push({ type: 'milestone', minutes: reached, late: sinceMs > LATE_MS });
     }
+    m.milestone = every > 0 ? Math.floor(st.activeMs / (every * 60000)) : 0;
     if (st.capped) events.push({ type: 'capped' });
     return { st, events, marks: m };
   }
   function freeResumeMarks(t, now, everyMin = FREE_MILESTONE_MIN) {
-    const st = freeState(t, now);
-    return { count: st.countdownSec, started: !st.countdown, milestone: everyMin > 0 ? Math.floor(st.activeMs / (everyMin * 60000)) : 0 };
+    const st = freeState(t, now), every = validEvery(everyMin);
+    return { count: st.countdownSec, started: !st.countdown, milestone: every > 0 ? Math.floor(st.activeMs / (every * 60000)) : 0,
+      lastMin: Math.max(st.countdown ? 0 : reachedMin(st.activeMs, every), 0) };
+  }
+  // Fréquence modifiée pendant la séance : le palier déjà dépassé avec la nouvelle fréquence
+  // n'est pas annoncé (pas d'annonce rétroactive) ; le prochain arrive à l'heure.
+  function freeRetuneMarks(t, marks, now, everyMin) {
+    const st = freeState(t, now), every = validEvery(everyMin);
+    const prev = Number.isFinite(marks.lastMin) ? marks.lastMin : (marks.milestone || 0) * FREE_MILESTONE_MIN;
+    return { ...marks, lastMin: Math.max(prev, reachedMin(st.activeMs, every)), milestone: every > 0 ? Math.floor(st.activeMs / (every * 60000)) : 0 };
   }
 
   // Construit la séance à enregistrer à partir du chrono libre.
@@ -1364,8 +1403,20 @@
       kind: kind === 'walk' ? 'walk' : 'run', segments: [], meters: 0, coveredMs: 0, covered: [],
       last: null, paused: false, fixes: 0, jumps: 0,
       rejected: { accuracy: 0, jump: 0 }, gaps: [], lastFixAt: null, lastAcc: null,
+      diag: emptyDiag(),
     };
   }
+  // Compteurs de diagnostic : ce que devient chaque position reçue (aucune règle de calcul ici)
+  //   kept     : position retenue (départ, déplacement, reprise après coupure)
+  //   still    : ignorée pour immobilité (déplacement inférieur à la précision)
+  //   accuracy : rejetée pour précision insuffisante (> 25 m)
+  //   jump     : rejetée pour vitesse aberrante
+  //   time     : rejetée pour horodatage (déjà reçue, plus ancienne, ou hors de la séance)
+  //   paused   : reçue pendant une pause (jamais comptée)
+  //   other    : autre rejet (position invalide : coordonnées ou précision illisibles)
+  const DIAG_KEYS = ['kept', 'still', 'accuracy', 'jump', 'time', 'paused', 'other'];
+  function emptyDiag() { return { kept: 0, still: 0, accuracy: 0, jump: 0, time: 0, paused: 0, other: 0 }; }
+  const DIAG_OF = { start: 'kept', move: 'kept', gap: 'kept', still: 'still', accuracy: 'accuracy', jump: 'jump', old: 'time', outside: 'time', paused: 'paused', invalid: 'other' };
   const validFix = f => !!f && [f.t, f.lat, f.lon, f.acc].every(Number.isFinite) && Math.abs(f.lat) <= 90 && Math.abs(f.lon) <= 180 && f.acc >= 0;
   const pointOf = f => [Math.round(f.t), round(f.lat, 6), round(f.lon, 6), Math.round(f.acc)];
 
@@ -1383,6 +1434,13 @@
   // Ajoute une position. Renvoie la décision : start, move, still, accuracy, jump, gap, paused, old, outside, invalid
   //   win (facultatif) : { from, to } — une position horodatée hors de la séance n'est jamais comptée
   function trackAddFix(tr, f, win) {
+    const res = addFix(tr, f, win);
+    if (!tr.diag || typeof tr.diag !== 'object') tr.diag = emptyDiag();
+    const k = DIAG_OF[res];
+    tr.diag[k] = (tr.diag[k] || 0) + 1;
+    return res;
+  }
+  function addFix(tr, f, win) {
     if (!validFix(f)) return 'invalid';
     if (win && ((Number.isFinite(win.from) && f.t < win.from) || (Number.isFinite(win.to) && f.t > win.to))) return 'outside';
     tr.fixes++;
@@ -1498,12 +1556,13 @@
       paceSecPerKm: km >= 0.05 && coveredMs > 0 ? Math.round(coveredMs / 1000 / km) : null,
       points: tr.segments.reduce((a, s) => a + s.length, 0), segments: tr.segments.length,
       gaps: big ? big.length : tr.gaps.length, rejected: tr.rejected.accuracy + tr.rejected.jump,
+      diag: { ...emptyDiag(), ...(tr.diag || {}) },
     };
   }
   // Ce qui est enregistré avec la séance (pas les points : les parcours viendront avec les cartes, 6.2)
   function gpsSessionInfo(tr, ref, endAt) {
     const s = trackSummary(tr, ref, endAt);
-    return { coverage: s.coverage, gaps: s.gaps, points: s.points, rejected: s.rejected, uncoveredSec: Math.round(s.uncoveredMs / 1000) };
+    return { coverage: s.coverage, gaps: s.gaps, points: s.points, rejected: s.rejected, uncoveredSec: Math.round(s.uncoveredMs / 1000), diag: s.diag };
   }
   // Distance GPS d'une séance enregistrée, suivie seulement en partie (moins de 80 %)
   const gpsPartial = s => !!(s && s.distance && s.distance.source === 'gps' && s.gps && s.gps.coverage < GPS.MIN_COVERAGE);
@@ -1648,7 +1707,7 @@
   }
 
   return {
-    GPS, haversine, createTrack, trackAddFix, trackPause, trackResume, gpsSignal, trackSummary, gpsSessionInfo, gpsPartial, activePeriods, isValidTrack, gpsErrorMessage,
+    GPS, haversine, createTrack, trackAddFix, trackPause, trackResume, gpsSignal, trackSummary, gpsSessionInfo, gpsPartial, DIAG_KEYS, activePeriods, isValidTrack, gpsErrorMessage,
     QUEST_XP, CHAPTERS, EPICS, dailyQuestFor, weeklyQuestsFor, deriveQuests, deriveGame,
     BADGE_CATS, REWARDS, badgeProgress, statsReport, MEASURED_SOURCES, monthKey, shiftMonth,
     XP, WEEKLY_TARGET, LIMITS, LEVELS, PROGRAM, PROGRAM_STEPS, WARMUP, COOLDOWN, BADGES, HEALTHY_PACE, SCHEMA_VERSION, DAY,
@@ -1659,7 +1718,7 @@
     profileError, suggestedEnd,
     newId, emptyData, normalizeData, serialize,
     createTimer, timerState, timerPause, timerResume, timerStartNow, timerSkip, timerMinutes, timerActiveMs, timerSummary, isValidTimer,
-    FREE_MAX_MS, FREE_MILESTONE_MIN, createFreeTimer, freeState, freeCues, freeInitialMarks, freeResumeMarks, freeSessionEntry, isValidFreeTimer,
+    FREE_MAX_MS, FREE_MILESTONE_MIN, createFreeTimer, freeState, freeCues, freeInitialMarks, freeResumeMarks, freeRetuneMarks, spokenElapsed, ANNOUNCE_CHOICES, ANNOUNCE_DEFAULT, freeSessionEntry, isValidFreeTimer,
     FEEL_LABELS, ADJ_KINDS, ADJ_REASONS, LONG_BREAK_DAYS, restDaysAfter, coachAdvice, normAdjustments,
     LATE_MS, VOICE_RATE, frenchVoicesOf, describeVoice, pickVoice, phaseName, spokenDuration, phaseCue, warnCue, CUES, initialMarks, timerCues, resumeMarks, DEFAULT_SETTINGS, normSettings,
   };

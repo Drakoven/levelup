@@ -41,7 +41,22 @@ sauvegarde avant toute migration, tests automatisés, compte rendu à chaque ét
 - Résumé `gps { coverage, gaps, points, rejected, uncoveredSec }` enregistré avec la séance.
 - Limite PWA : sur iPhone, le GPS s'arrête quand l'écran est verrouillé (il faut Capacitor).
 
-### Version 2.8.0 — Coach vocal et diagnostic GPS (en attente de validation)
+### Version 2.9.0 — Suivi du poids facultatif (en attente de validation)
+- Réglage « Suivi du poids » (Objectifs) : désactivé par défaut pour les nouveaux joueurs,
+  conservé pour les profils déjà configurés. Le désactiver masque seulement : pesées,
+  objectifs, XP, quêtes et succès sont conservés.
+- Création du personnage sans poids ni échéance ; accueil centré sur km, séances, régularité.
+- Quêtes : « Premier kilomètre » (chapitre 1) et « Fidèle au poste » (40 séances, chapitre 5)
+  remplacent les quêtes de poids ; celles déjà accomplies restent acquises (mêmes clés d'XP).
+  Les cinq chapitres sont réalisables sans aucune pesée.
+- Retour possible à la 2.8.0 : étiquette git `v2.8.0`. Procédure : annuler le commit 2.9.0
+  (`git revert`), passer la version à 2.9.1 dans `sw.js` et `package.json` pour que les iPhone
+  reçoivent la mise à jour, puis publier. Les données restent lisibles par la 2.8.0 ; un joueur
+  sans poids y reverrait l'écran de création (poids demandé), sans perte de séances.
+  Limite : la 2.8.0 ne connaît pas le réglage « suivi du poids » et l'efface à sa première
+  sauvegarde ; en revenant ensuite à la 2.9.0, un profil avec poids retrouve le suivi activé.
+
+### Version 2.8.0 — Coach vocal et diagnostic GPS ✅
 - Réglage « Fréquence des annonces » (désactivées, 5, 10, 15, 30, 60 min ; 30 min par défaut)
   pour le temps écoulé en course et marche libres. Début et fin toujours annoncés ; programmes
   guidés inchangés. Paliers sur le temps actif réel, jamais rejoués en retard.

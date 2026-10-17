@@ -137,12 +137,16 @@
   // Tout est recalculé à partir des séances : supprimer ou corriger une séance retire
   // ou déplace la récompense ; un import ne peut pas la dupliquer.
   const QUEST_XP = { main: 50, chapter: 150, daily: 15, weekly: 50, epic: 250 };
+  // Version 2.9.0 : le suivi du poids devient facultatif. Les deux quêtes de chapitre liées au
+  // poids sont remplacées par des objectifs sportifs (mêmes identifiants, donc mêmes clés d'XP :
+  // jamais de double récompense). Une quête de poids déjà accomplie jusqu'à cette date reste acquise.
+  const WEIGHT_QUESTS_UNTIL = '2026-10-18';
   const Q = (id, name, desc, metric, target, extra = {}) => ({ id, name, desc, metric, target, ...extra });
   const CHAPTERS = [
     { id: 'c1', title: 'L\'Éveil', lore: 'Tout héros commence par un premier pas.', quests: [
       Q('c1q1', 'Premier pas', 'Termine ta première séance', s => s.sessions, 1),
       Q('c1q2', 'Trois foulées', 'Termine 3 séances', s => s.sessions, 3),
-      Q('c1q3', 'Le point zéro', 'Enregistre ta première pesée', s => s.weights, 1),
+      Q('c1q3', 'Premier kilomètre', 'Parcours 1 km au total, en marche ou en course', s => Math.max(s.km, s.legacyWeigh ? 1 : 0), 1),
     ] },
     { id: 'c2', title: 'La Route', lore: 'Les chemins s\'ouvrent à ceux qui reviennent.', quests: [
       Q('c2q1', 'Dix bornes', 'Parcours 10 km au total', s => s.km, 10),
@@ -162,14 +166,14 @@
     { id: 'c5', title: 'La Légende', lore: 'On parlera de toi dans les tavernes.', quests: [
       Q('c5q1', 'Grand voyageur', 'Parcours 75 km au total', s => s.km, 75),
       Q('c5q2', 'Le souffle du dragon', 'Cours 25 min sans t\'arrêter (mesuré au chrono)', s => s.maxRun, 25, { run: true }),
-      Q('c5q3', 'La promesse tenue', 'Atteins ton objectif de poids principal', s => s.maxLost, s => s.goalTotal),
+      Q('c5q3', 'Fidèle au poste', 'Termine 40 séances de marche ou de course', s => Math.max(s.runWalk, s.legacyGoal ? 40 : 0), 40),
     ] },
   ];
   const EPICS = [
     Q('e100', 'Centurion', 'Parcours 100 km au total', s => s.km, 100),
     Q('e10k', 'Les dix mille', 'Cours 10 km en une seule séance chronométrée', s => s.bestTimedRunKm, 10, { run: true }),
     Q('e30', 'Trente minutes de légende', 'Cours 30 min sans t\'arrêter (mesuré au chrono)', s => s.maxRun, 30, { run: true }),
-    Q('ebonus', 'Au-delà de l\'horizon', 'Atteins ton objectif bonus', s => s.maxLost, s => s.bonusTotal),
+    Q('ebonus', 'Au-delà de l\'horizon', 'Atteins ton objectif bonus', s => s.maxLost, s => s.bonusTotal, { weight: true }),
   ];
   const QUEST_METRICS = [...CHAPTERS.flatMap(c => c.quests), ...EPICS];
   for (const q of QUEST_METRICS) q.test = s => { const { value, target } = badgeProgress(q, s); return target > 0 && value >= target; };
@@ -407,7 +411,8 @@
     const perfectWeeks = new Set();
     const weighWeeks = new Set();
     const records = { maxDistance: 0, maxRun: 0, maxDistanceDate: null, maxRunDate: null };
-    const acc = { sessions: 0, km: 0, minutes: 0, strength: 0, weights: 0, maxLost: 0, walks: 0, walkKm: 0, freeRuns: 0, freeWalks: 0, respected: 0, bestTimedRunKm: 0, progStep: 0 };
+    const acc = { sessions: 0, km: 0, minutes: 0, strength: 0, weights: 0, maxLost: 0, walks: 0, walkKm: 0, freeRuns: 0, freeWalks: 0, respected: 0, bestTimedRunKm: 0, progStep: 0,
+      runWalk: 0, legacyWeigh: 0, legacyGoal: 0 };
     const questDates = {};   // quête (principale / épique) → date où l'objectif a été atteint
     const questMeta = {};    // détails utiles à l'affichage (ex. distance déclarée des 10 km)
     let bestStreak = 0, gentleBest = 0, pendingHard = null, snap = null;
@@ -452,6 +457,7 @@
         acc.minutes += s.duration;
         if (s.type === 'strength') acc.strength++;
         if (s.type === 'walk') { acc.walks++; acc.walkKm = round(acc.walkKm + s.km, 2); }
+        if (s.type === 'run' || s.type === 'walk') acc.runWalk++;
         if (s.mode === 'libre') { if (s.type === 'run') acc.freeRuns++; else acc.freeWalks++; }
         // Quête « 10 km » : uniquement une course CHRONOMÉTRÉE (la distance peut être déclarée)
         if (s.type === 'run' && s.timing && s.km > 0) {
@@ -472,6 +478,11 @@
         }
         acc.weights++;
         if (p.startWeight > 0) acc.maxLost = Math.max(acc.maxLost, round(p.startWeight - w.kg, 1));
+        // Anciennes quêtes de poids (« Le point zéro », « La promesse tenue ») accomplies avant la 2.9.0
+        if (w.date <= WEIGHT_QUESTS_UNTIL) {
+          acc.legacyWeigh = 1;
+          if (goalTotal > 0 && acc.maxLost >= goalTotal) acc.legacyGoal = 1;
+        }
       }
 
       // Succès débloqués par cette saisie
@@ -524,7 +535,14 @@
   // ---------- 5. Profil ----------
   const HEALTHY_PACE = 0.5; // kg par semaine : rythme durable proposé par défaut
 
+  // Suivi du poids facultatif (2.9.0) : sans suivi, aucun poids ni échéance n'est demandé.
+  // Les poids déjà saisis sont conservés tels quels (simplement masqués).
+  const weightConfigured = p => !!p && p.startWeight >= 30 && p.startWeight <= 300 && p.goalWeight >= 30 && p.goalWeight < p.startWeight;
+  // Réglage absent (données brutes d'avant la 2.9.0) : le suivi est actif s'il a été configuré
+  const weightOn = p => !!p && p.weightTracking !== false && weightConfigured(p);
+
   function profileError(p) {
+    if (p.weightTracking === false) return '';
     if (!(p.startWeight >= 30 && p.startWeight <= 300)) return 'Indique ton poids actuel.';
     if (!(p.goalWeight >= 30 && p.goalWeight <= 300)) return 'Indique ton poids cible.';
     if (p.goalWeight >= p.startWeight) return 'Ton poids cible doit être inférieur à ton poids actuel.';
@@ -553,7 +571,7 @@
   }
 
   const emptyData = () => ({
-    profile: { name: '', startWeight: null, goalWeight: null, bonusGoal: null, height: null, startDate: todayISO(), endDate: '' },
+    profile: { name: '', weightTracking: false, startWeight: null, goalWeight: null, bonusGoal: null, height: null, startDate: todayISO(), endDate: '' },
     onboarded: false,
     sessions: [],
     weights: [],
@@ -569,8 +587,9 @@
     const r = raw && typeof raw === 'object' ? raw : {};
     const w = v => { const n = round(num(v), 1); return inRange(n, LIMITS.weight) ? n : null; };
     const h = Math.round(num(r.height));
-    return {
+    const out = {
       name: cleanText(r.name, 20),
+      weightTracking: false,
       startWeight: w(r.startWeight),
       bonusGoal: (() => { const b = w(r.bonusGoal), g = w(r.goalWeight); return b && g && b < g ? b : null; })(),
       goalWeight: w(r.goalWeight),
@@ -578,6 +597,10 @@
       startDate: isValidISO(r.startDate) ? r.startDate : todayISO(),
       endDate: isValidISO(r.endDate) ? r.endDate : '',
     };
+    // Migration : un profil qui n'a pas encore ce réglage garde le suivi s'il l'avait configuré
+    // (poids de départ et objectif) ; un choix enregistré est toujours respecté.
+    out.weightTracking = typeof r.weightTracking === 'boolean' ? r.weightTracking : weightConfigured(out);
+    return out;
   }
 
   // Sources de mesure (format v3)
@@ -1311,7 +1334,7 @@
       const done = qd[q.id] || null;
       if (done) ledger.push({ key: `qe:${q.id}`, date: done, amount: QUEST_XP.epic, label: `🐉 Quête épique : ${q.name}`, qtype: 'epic' });
       const meta = q.id === 'e10k' && Dd.questMeta && Dd.questMeta.e10k ? Dd.questMeta.e10k : null;
-      return { id: q.id, name: q.name, desc: q.desc, run: !!q.run, ...pr, done, meta };
+      return { id: q.id, name: q.name, desc: q.desc, run: !!q.run, weight: !!q.weight, ...pr, done, meta };
     });
 
     // Quêtes du jour : chaque jour où une séance a eu lieu, plus aujourd'hui (affichage)
@@ -1632,10 +1655,10 @@
 
     // --- Recommandation du jour ---
     let kind, title, text;
-    const daysToStart = isValidISO(p.startDate) ? daysBetween(today, p.startDate) : 0;
+    const daysToStart = weightOn(p) && isValidISO(p.startDate) ? daysBetween(today, p.startDate) : 0;
     if (!past.length && daysToStart > 0) {
       kind = 'start'; title = 'Préparation';
-      text = `Le défi démarre ${daysToStart === 1 ? 'demain' : `dans ${daysToStart} jours`}. Prépare tes baskets et fais ta première pesée pour fixer ton point de départ.`;
+      text = `Le défi démarre ${daysToStart === 1 ? 'demain' : `dans ${daysToStart} jours`}. Prépare tes baskets${weightOn(p) ? ' et fais ta première pesée pour fixer ton point de départ' : ''}.`;
     } else if (!past.length) {
       kind = 'run'; title = `Première mission : S${ps.week} · Séance ${ps.session}`;
       text = `${ps.desc}. C'est volontairement facile : le but est de finir en te disant « j'aurais pu en faire plus ».`;
@@ -1709,7 +1732,7 @@
   return {
     GPS, haversine, createTrack, trackAddFix, trackPause, trackResume, gpsSignal, trackSummary, gpsSessionInfo, gpsPartial, DIAG_KEYS, activePeriods, isValidTrack, gpsErrorMessage,
     QUEST_XP, CHAPTERS, EPICS, dailyQuestFor, weeklyQuestsFor, deriveQuests, deriveGame,
-    BADGE_CATS, REWARDS, badgeProgress, statsReport, MEASURED_SOURCES, monthKey, shiftMonth,
+    BADGE_CATS, REWARDS, WEIGHT_QUESTS_UNTIL, weightConfigured, weightOn, badgeProgress, statsReport, MEASURED_SOURCES, monthKey, shiftMonth,
     XP, WEEKLY_TARGET, LIMITS, LEVELS, PROGRAM, PROGRAM_STEPS, WARMUP, COOLDOWN, BADGES, HEALTHY_PACE, SCHEMA_VERSION, DAY,
     toISO, parseISO, todayISO, daysBetween, weekKey, shiftWeek, addDays, isValidISO, fmtMin,
     levelInfo, programSession, sessionXP, continuousRun, bestStreakOf, derive,

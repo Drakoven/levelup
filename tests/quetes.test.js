@@ -31,8 +31,9 @@ test('chapitre 1 : trois quêtes, puis le chapitre terminé (50 × 3 + 150)', ()
 });
 
 test('chapitre verrouillé : un exploit déjà accompli est validé à l\'ouverture, pas avant', () => {
-  // 10 km parcourus AVANT la première pesée (qui termine le chapitre 1 le 20 octobre)
-  const d = mk([S('2026-10-05', 'walk', 60, km(5)), S('2026-10-07', 'walk', 60, km(5.5)), S('2026-10-09', 'walk', 30)], [{ date: '2026-10-20', kg: 94 }]);
+  // 10 km parcourus AVANT la 3e séance (qui termine le chapitre 1 le 20 octobre).
+  // 2.9.0 : « Premier kilomètre » remplace la pesée ; le chapitre se termine avec « Trois foulées ».
+  const d = mk([S('2026-10-05', 'walk', 60, km(5)), S('2026-10-07', 'walk', 60, km(5.5)), S('2026-10-20', 'walk', 30)]);
   const g = G(d);
   assert.equal(g.quests.chapters[0].done, '2026-10-20');
   assert.equal(g.quests.chapters[1].quests[0].done, '2026-10-20', '« Dix bornes » validée à l\'ouverture du chapitre 2');

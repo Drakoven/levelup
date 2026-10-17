@@ -247,6 +247,11 @@ function freeCard(title) {
   </div>`;
 }
 
+// Suivi du poids facultatif (2.9.0) : affiché seulement s'il est actif et configuré.
+// Désactivé, il ne fait que masquer : pesées, objectifs, XP et succès sont conservés.
+const wOn = () => C.weightOn(data.profile);
+const KM_STEPS = [1, 5, 10, 25, 50, 100, 250, 500, 1000];
+
 function renderTop() {
   const L = D.level;
   $('#topXp').innerHTML = `<span class="lv">${L.n}</span><span class="mini"><i style="width:${L.pct * 100}%"></i></span>${fmtNum(D.xp, 0)} XP`;
@@ -256,14 +261,28 @@ function renderHome() {
   const p = data.profile, st = D.stats, L = D.level;
   const coach = C.coachAdvice(data, D);
   const today = todayISO();
-  const daysToStart = daysBetween(today, p.startDate);
-  const daysLeft = Math.max(0, daysBetween(today, p.endDate));
-  const pctW = clamp(st.lost / st.goalTotal, 0, 1);
+  const weight = wOn();
+  const daysToStart = weight ? daysBetween(today, p.startDate) : 0;
+  const daysLeft = weight ? Math.max(0, daysBetween(today, p.endDate)) : 0;
+  const pctW = weight ? clamp(st.lost / st.goalTotal, 0, 1) : 0;
   const quote = QUOTES[Math.floor(parseISO(today) / DAY) % QUOTES.length];
-  const marks = [0.25, 0.5, 0.75, 1].map(f => {
+  const marks = !weight ? '' : [0.25, 0.5, 0.75, 1].map(f => {
     const kg = Math.round(st.goalTotal * f * 2) / 2;
     return `<span class="${st.lost >= kg ? 'hit' : ''}" style="left:${f * 100}%;${f === 1 ? 'transform:translateX(-100%)' : ''}">−${fmtNum(kg)}</span>`;
   }).join('');
+  // Sans suivi du poids : la progression sportive est mise en avant (kilomètres, séances, régularité)
+  const km = st.totals.km, nextKm = KM_STEPS.find(v => v > km) || null, prevKm = [...KM_STEPS].reverse().find(v => v <= km) || 0;
+  const sportTiles = `
+    <div class="grid-3">
+      <div class="tile"><div class="v">${fmtNum(km)}<small> km</small></div><div class="l">Parcourus</div></div>
+      <div class="tile accent"><div class="v">${st.totals.sessions}</div><div class="l">Séances</div></div>
+      <div class="tile"><div class="v">${fmtNum(D.records.maxRun)}<small> min</small></div><div class="l">Course sans pause</div></div>
+    </div>
+    <div class="card" style="margin-top:12px">
+      <div class="row between"><h2>${nextKm ? `Prochain cap : ${fmtNum(nextKm)} km` : 'Légende de la route 🌌'}</h2><span class="muted small">${fmtNum(km)}${nextKm ? ` / ${fmtNum(nextKm)}` : ''} km</span></div>
+      <div class="bar lime thick" style="margin-top:12px"><i style="width:${nextKm ? clamp((km - prevKm) / (nextKm - prevKm), 0, 1) * 100 : 100}%"></i></div>
+      <div class="row between small muted" style="margin-top:8px"><span>${st.thisWeek} jour${st.thisWeek > 1 ? 's' : ''} actif${st.thisWeek > 1 ? 's' : ''} cette semaine</span><span>${st.perfectWeeks} semaine${st.perfectWeeks > 1 ? 's' : ''} parfaite${st.perfectWeeks > 1 ? 's' : ''}</span></div>
+    </div>`;
 
   $('#view-home').innerHTML = `
     <div class="eyebrow">${fmtLongDate(today)}</div>
@@ -274,7 +293,7 @@ function renderHome() {
       <div class="hero-card">
         <div class="ring">${ring(L.pct)}<div class="center"><div><span>NIVEAU</span><b>${L.n}</b></div></div></div>
         <div class="hero-info">
-          <div class="eyebrow">Opération ${fmtNum(p.goalWeight)} kg</div>
+          <div class="eyebrow">${weight ? `Opération ${fmtNum(p.goalWeight)} kg` : 'Aventure sportive'}</div>
           <div class="title">${L.title}</div>
           <div class="row between small"><span class="xp-num">${fmtNum(D.xp, 0)} XP</span>
             <span class="muted">${L.next ? `${L.next.xp - D.xp} XP → ${L.next.title}` : 'Niveau max !'}</span></div>
@@ -283,7 +302,7 @@ function renderHome() {
       </div>
     </div>
 
-    <div class="grid-3">
+    ${!weight ? sportTiles : `<div class="grid-3">
       <div class="tile"><div class="v">${fmtNum(st.current)}<small> kg</small></div><div class="l">Poids actuel</div></div>
       <div class="tile accent"><div class="v">${st.lost ? `−${fmtNum(st.lost)}` : 0}<small> kg</small></div><div class="l">Perdus</div></div>
       <div class="tile"><div class="v">${daysToStart > 0 ? `J-${daysToStart}` : daysLeft}</div><div class="l">${daysToStart > 0 ? 'Avant le départ' : 'Jours restants'}</div></div>
@@ -292,7 +311,7 @@ function renderHome() {
     <div class="card" style="margin-top:12px">
       <div class="row between"><h2>${fmtNum(p.startWeight)} → ${fmtNum(p.goalWeight)} kg</h2><span class="muted small">${fmtNum(st.lost)} / ${fmtNum(st.goalTotal)} kg</span></div>
       <div class="milestones"><div class="bar lime thick" style="margin-top:12px"><i style="width:${pctW * 100}%"></i></div><div class="marks">${marks}</div></div>
-    </div>
+    </div>`}
 
     <div class="card">
       <div class="row between">
@@ -454,7 +473,7 @@ const fmtHours = sec => fmtDuration(Math.round(sec / 60));
 function nextChallenges(n = 3) {
   const coach = C.coachAdvice(data, D);
   const resting = coach.kind === 'recovery' || coach.kind === 'rest';
-  return BADGES.filter(b => !D.badges[b.id] && !(resting && b.run))
+  return BADGES.filter(b => !D.badges[b.id] && !(resting && b.run) && !(b.cat === 'poids' && !wOn()))
     .map(b => ({ b, ...C.badgeProgress(b, D.snap) }))
     .filter(x => x.target > 0)
     .sort((a, b) => b.value / b.target - a.value / a.target || a.target - b.target)
@@ -643,7 +662,7 @@ function questsSection() {
     ${current ? '' : Qs.chapters.every(c => c.done) ? '<p class="small muted">Tous les chapitres sont terminés. Ta légende est écrite !</p>' : ''}
 
     <div class="section-title"><h2>🐉 Quêtes épiques</h2><span class="muted small">+${C.QUEST_XP.epic} XP chacune</span></div>
-    <div class="card quest-card epic">${Qs.epics.map(e => questRow(e, 'epic', C.QUEST_XP.epic, e10kNote(e))).join('')}</div>
+    <div class="card quest-card epic">${Qs.epics.filter(e => !e.weight || wOn() || e.done).map(e => questRow(e, 'epic', C.QUEST_XP.epic, e10kNote(e))).join('')}</div>
 
     <div class="section-title"><h2>📖 Quêtes terminées</h2><span class="muted small">${history.length}</span></div>
     <div class="card" style="padding:8px 12px">${history.length ? shownHist.map(e => `
@@ -660,7 +679,7 @@ function characterSection() {
     { name: '🫁 Endurance', v: clamp(D.programStep / PROGRAM_STEPS * 80 + st.totals.km / 5, 0, 100), c: 'var(--lime)' },
     { name: '💪 Force', v: clamp(st.totals.strength * 4, 0, 100), c: 'var(--pink)' },
     { name: '📅 Régularité', v: clamp(st.perfectWeeks * 6 + st.streak * 4, 0, 100), c: 'var(--orange)' },
-    { name: '🧠 Volonté', v: clamp(st.totals.sessions * 2 + st.weightsCount * 2, 0, 100), c: 'var(--violet)' },
+    { name: '🧠 Volonté', v: clamp(st.totals.sessions * 2 + st.perfectWeeks * 4, 0, 100), c: 'var(--violet)' },
   ];
   const unlocked = Object.keys(D.badges).length;
   const reward = C.REWARDS[L.n - 1], nextReward = L.next ? C.REWARDS[L.n] : null;
@@ -724,17 +743,20 @@ function characterSection() {
       <tr><td>⏳ Séance plus courte</td><td>+${XP.walkMini} à +${XP.runShort}</td></tr>
       <tr><td>📅 Objectif hebdo (3 jours actifs)</td><td>+${XP.weeklyGoal}</td></tr>
       <tr><td>🏅 Nouveau record perso (mesuré)</td><td>+${XP.record}</td></tr>
-      <tr><td>⚖️ Pesée hebdomadaire</td><td>+${XP.weighIn}</td></tr>
+      ${wOn() ? `<tr><td>⚖️ Pesée hebdomadaire (facultatif)</td><td>+${XP.weighIn}</td></tr>` : ''}
       <tr><td>☀️ Quête du jour</td><td>+${C.QUEST_XP.daily}</td></tr>
       <tr><td>🗓️ Quête de la semaine</td><td>+${C.QUEST_XP.weekly}</td></tr>
       <tr><td>📜 Quête principale · 🏰 chapitre</td><td>+${C.QUEST_XP.main} · +${C.QUEST_XP.chapter}</td></tr>
       <tr><td>🐉 Quête épique</td><td>+${C.QUEST_XP.epic}</td></tr>
     </table>
-    <p class="small muted" style="margin:12px 0 0">L'XP récompense la régularité, pas la vitesse de perte de poids. Les succès sont des récompenses symboliques : ils ne rapportent pas d'XP en plus. Chaque quête ne rapporte qu'une fois.</p></div>`;
+    <p class="small muted" style="margin:12px 0 0">L'XP récompense la régularité et l'effort réel${wOn() ? ', pas la vitesse de perte de poids' : ''}. Le poids n'est jamais nécessaire pour progresser. Les succès sont des récompenses symboliques : ils ne rapportent pas d'XP en plus. Chaque quête ne rapporte qu'une fois.</p></div>`;
 }
 
 function badgesSection() {
-  const unlocked = Object.keys(D.badges).length;
+  // Succès de poids masqués sans suivi du poids, sauf ceux déjà obtenus (toujours conservés)
+  const visible = b => b.cat !== 'poids' || wOn() || D.badges[b.id];
+  const shown = BADGES.filter(visible);
+  const unlocked = shown.filter(b => D.badges[b.id]).length;
   const challenges = nextChallenges(3);
   return `
     <div class="section-title"><h2>Prochains défis</h2><span class="muted small">les plus proches</span></div>
@@ -742,9 +764,10 @@ function badgesSection() {
       <p class="small muted" style="margin:10px 0 0">Les défis de course ne sont pas proposés les jours de récupération : le repos fait partie du jeu.</p>
     </div>
 
-    <div class="section-title"><h2>Succès</h2><span class="muted small">${unlocked}/${BADGES.length}</span></div>
+    <div class="section-title"><h2>Succès</h2><span class="muted small">${unlocked}/${shown.length}</span></div>
     ${Object.entries(C.BADGE_CATS).map(([cat, title]) => {
-      const list = BADGES.filter(b => b.cat === cat);
+      const list = shown.filter(b => b.cat === cat);
+      if (!list.length) return '';
       const got = list.filter(b => D.badges[b.id]).length;
       return `<div class="cat-title"><span>${title}</span><span class="muted small">${got}/${list.length}</span></div>
       <div class="badges">${list.map(b => {
@@ -783,7 +806,12 @@ function renderStats() {
   const rep = C.statsReport(data, D);
   const T = rep.totals, ty = rep.types;
   // Carte de régularité : une case par semaine du défi
-  const startW = weekKey(p.startDate), endW = weekKey(p.endDate), nowW = weekKey(todayISO());
+  // Sans échéance (suivi du poids désactivé) : depuis la première séance, jusqu'à 3 semaines après aujourd'hui
+  const nowW = weekKey(todayISO());
+  const firstDate = [p.startDate, st.last ? D.sessions[0].date : null].filter(C.isValidISO).sort()[0] || todayISO();
+  let startW = weekKey(wOn() ? p.startDate : firstDate);
+  const endW = wOn() && C.isValidISO(p.endDate) ? weekKey(p.endDate) : shiftWeek(nowW, 3);
+  if (!wOn()) for (let i = 0; i < 400 && shiftWeek(startW, 52) <= endW; i++) startW = shiftWeek(startW, 1); // 52 semaines au plus
   let heat = '';
   for (let k = startW; k <= endW; k = shiftWeek(k, 1)) {
     const c = st.byWeek[k] || 0;
@@ -868,7 +896,7 @@ function renderStats() {
       <p class="small muted" style="margin:8px 0 0">Minutes de course mesurées au chrono (programme et course libre). Plus longue course sans pause : <b style="color:var(--text)">${fmtNum(D.records.maxRun)} min</b>.</p>
     </div>
 
-    <div class="section-title"><h2>Courbe de poids</h2><span class="muted small">pesées saisies</span></div>
+    ${!wOn() ? '' : `<div class="section-title"><h2>Courbe de poids</h2><span class="muted small">pesées saisies</span></div>
     <div class="card chart">
       <div class="seg-mini">${seg('weight-range', 'recent', ui.weightRange, '8 dernières semaines')}${seg('weight-range', 'all', ui.weightRange, 'Tout le défi')}</div>
       ${weightChart(st, rep)}
@@ -884,7 +912,7 @@ function renderStats() {
         <button class="btn primary block" type="submit">⚖️ Enregistrer ma pesée · +${XP.weighIn} XP</button>
       </form>
       ${weightList(st)}
-    </div>
+    </div>`}
 
     <div class="section-title"><h2>Régularité</h2><span class="muted small">${st.perfectWeeks} semaine${st.perfectWeeks > 1 ? 's' : ''} parfaite${st.perfectWeeks > 1 ? 's' : ''}</span></div>
     <div class="card">
@@ -907,22 +935,24 @@ function goalCard(g, color) {
 
 function renderGoals() {
   const p = data.profile, st = D.stats;
+  const weight = wOn(), tracking = p.weightTracking === true;
   const rep = C.statsReport(data, D);
-  const totalDays = daysBetween(p.startDate, p.endDate);
+  const totalDays = weight ? daysBetween(p.startDate, p.endDate) : 0;
   const weeks = totalDays / 7;
   const pace = st.goalTotal / weeks;
   const elapsed = clamp(daysBetween(p.startDate, todayISO()), 0, totalDays);
   // Paliers = quarts de l'objectif, arrondis au demi-kilo
-  const steps = [0.25, 0.5, 0.75, 1].map(f => Math.round(st.goalTotal * f * 2) / 2).filter((v, i, a) => v > 0 && a.indexOf(v) === i);
+  const steps = !weight ? [] : [0.25, 0.5, 0.75, 1].map(f => Math.round(st.goalTotal * f * 2) / 2).filter((v, i, a) => v > 0 && a.indexOf(v) === i);
   const bk = readBackup();
   const reasons = { import: 'avant import', migration: 'avant conversion', reset: 'avant remise à zéro', restore: 'avant restauration' };
   const [main, bonus] = rep.weight.goals;
 
   $('#view-goals').innerHTML = `
-    <div class="eyebrow">Mission principale</div>
+    <div class="eyebrow">${weight ? 'Mission principale' : 'Ton aventure'}</div>
     <h1>Objectifs</h1>
-    <p class="quote">Un objectif sans date, c'est juste un souhait.</p>
+    <p class="quote">${weight ? 'Un objectif sans date, c\'est juste un souhait.' : 'Chaque pas compte, à ton rythme.'}</p>
 
+    ${weight ? `
     <div class="card glow">
       <div class="row between">
         <div><div class="eyebrow">Départ</div><div class="session-desc" style="margin:4px 0">${fmtNum(p.startWeight)} kg</div></div>
@@ -949,17 +979,40 @@ function renderGoals() {
     ${bonus ? `<div class="lv-row ${bonus.reached ? 'reached current' : ''}"><span class="n">${bonus.reached ? '✓' : '🌟'}</span><span><b>Bonus −${fmtNum(bonus.total)} kg</b> <span class="muted small">· ${fmtNum(bonus.target)} kg</span></span><span class="xp">${bonus.reached ? 'Atteint !' : 'après l\'objectif'}</span></div>` : ''}
     </div></div>
 
+` : `    <div class="card glow">
+      <div class="eyebrow">Ta progression</div>
+      <div class="grid-3" style="margin-top:8px">
+        <div><div class="session-desc" style="margin:4px 0">${fmtNum(st.totals.km)} km</div><div class="small muted">parcourus</div></div>
+        <div><div class="session-desc" style="margin:4px 0">${st.totals.sessions}</div><div class="small muted">séances</div></div>
+        <div><div class="session-desc" style="margin:4px 0">${st.bestStreak}</div><div class="small muted">meilleure série</div></div>
+      </div>
+      <p class="small muted" style="margin:12px 0 0">Tes objectifs sportifs sont dans le <b style="color:var(--text)">journal de quêtes</b> (onglet Héros) : chapitres, quêtes de la semaine et quêtes épiques. Aucun ne demande de te peser.</p>
+      <button class="btn ghost block" style="margin-top:12px" data-action="open-quests">📜 Ouvrir le journal de quêtes</button>
+    </div>
+`}
+
+    <div class="section-title"><h2>Suivi du poids</h2><span class="muted small">${tracking ? 'activé' : 'désactivé'}</span></div>
+    <div class="card">
+      ${tracking
+        ? `<p class="small muted" style="margin:0 0 12px">${weight ? 'Courbe, pesées, objectifs et paliers sont affichés.' : '⚖️ Renseigne ton poids de départ, ton objectif et ton échéance dans ton profil ci-dessous pour afficher ta courbe et tes paliers.'}</p>
+           <button class="btn ghost block" data-action="weight-off">Désactiver le suivi du poids</button>`
+        : `<p class="small muted" style="margin:0 0 12px">LEVEL UP fonctionne pleinement sans poids : XP, niveaux, quêtes et succès reposent sur ton activité réelle.${data.weights.length || p.startWeight ? ' Tes pesées et objectifs déjà enregistrés sont conservés, simplement masqués.' : ''}</p>
+           <button class="btn primary block" data-action="weight-on">⚖️ Activer le suivi du poids</button>`}
+      <p class="small muted" style="margin:10px 0 0">Activer ou désactiver le suivi ne retire jamais d'XP, de quête ni de succès déjà obtenus.</p>
+    </div>
+
     <div class="section-title"><h2>Mon profil</h2></div>
     <form class="card" id="profileForm">
       <label class="f">Prénom / pseudo<input name="pname" value="${esc(p.name)}" placeholder="Héros" maxlength="20"></label>
-      <div class="grid-2">
-        <label class="f">Poids de départ (kg)<input name="startWeight" type="text" inputmode="decimal" autocomplete="off" value="${p.startWeight}" required></label>
-        <label class="f">Objectif (kg)<input name="goalWeight" type="text" inputmode="decimal" autocomplete="off" value="${p.goalWeight}" required></label>
+      ${tracking ? `      <div class="grid-2">
+        <label class="f">Poids de départ (kg)<input name="startWeight" type="text" inputmode="decimal" autocomplete="off" value="${p.startWeight || ''}" required></label>
+        <label class="f">Objectif (kg)<input name="goalWeight" type="text" inputmode="decimal" autocomplete="off" value="${p.goalWeight || ''}" required></label>
         <label class="f">Taille (cm)<input name="height" type="number" min="${LIMITS.height[0]}" max="${LIMITS.height[1]}" value="${p.height || ''}" placeholder="optionnel"></label>
         <label class="f">Objectif bonus (kg)<input name="bonusGoal" type="text" inputmode="decimal" autocomplete="off" value="${p.bonusGoal || ''}" placeholder="optionnel"></label>
         <label class="f">Début du défi<input name="startDate" type="date" value="${p.startDate}" required></label>
-        <label class="f">Échéance<input name="endDate" type="date" value="${p.endDate}" required></label>
+        <label class="f">Échéance<input name="endDate" type="date" value="${p.endDate || ''}" required></label>
       </div>
+` : ''}
       <button class="btn primary block" type="submit">Enregistrer</button>
     </form>
 
@@ -978,7 +1031,7 @@ function renderGoals() {
 
 function renderAll() {
   if (!data.onboarded) return renderOnboarding();
-  document.title = `Level Up — Opération ${fmtNum(data.profile.goalWeight)} kg`;
+  document.title = wOn() ? `Level Up — Opération ${fmtNum(data.profile.goalWeight)} kg` : 'Level Up';
   renderTop(); renderHome(); renderTrain(); renderHero(); renderStats(); renderGoals();
   if (pendingLevelUp) { showLevelUp(pendingLevelUp); pendingLevelUp = null; }
 }
@@ -988,7 +1041,7 @@ function renderAll() {
 function obValues() {
   const f = $('#obForm'), num = n => parseFloat(String(f[n].value).replace(',', '.'));
   return {
-    name: f.pname.value.replace(/[<>]/g, '').trim(), startWeight: num('startWeight'), goalWeight: num('goalWeight'),
+    name: f.pname.value.replace(/[<>]/g, '').trim(), weightTracking: !!f.wTrack.checked, startWeight: num('startWeight'), goalWeight: num('goalWeight'),
     height: Math.round(num('height')) || null, startDate: f.startDate.value, endDate: f.endDate.value,
   };
 }
@@ -1007,23 +1060,26 @@ function renderOnboarding() {
       <div class="ob-hero">⚡</div>
       <div class="eyebrow">Nouvelle partie</div>
       <h1>Crée ton personnage</h1>
-      <p class="muted">Chaque séance te rapporte de l'XP. Ton personnage monte de niveau… et toi aussi, dans la vraie vie.</p>
+      <p class="muted">Marche, course, renforcement : chaque séance te rapporte de l'XP. Ton personnage monte de niveau… et toi aussi, dans la vraie vie.</p>
       <label class="f">Ton prénom ou pseudo<input name="pname" maxlength="20" placeholder="Héros" autocomplete="given-name" value="${esc(p.name || '')}"></label>
       <div class="btns"><button type="button" class="btn primary" data-ob="next">C'est parti →</button></div>
     </section>
 
     <section class="ob-step" data-step="1">
-      <div class="eyebrow">Étape 2 / 3</div>
+      <div class="eyebrow" id="obStepLabel">Étape 2 / 3</div>
       <h1>Ta mission</h1>
-      <p class="muted">D'où tu pars, et où tu veux arriver. Tu pourras tout modifier plus tard.</p>
+      <p class="muted">LEVEL UP récompense ton activité réelle : kilomètres, séances, régularité. Le suivi du poids est facultatif, tu pourras l'activer ou le désactiver à tout moment.</p>
+      <label class="check ob-check"><input type="checkbox" name="wTrack" ${p.weightTracking ? 'checked' : ''}> ⚖️ Suivre aussi mon poids</label>
+      <div class="ob-weight" id="obWeight" ${p.weightTracking ? '' : 'hidden'}>
       <div class="grid-2">
         <label class="f">Poids actuel (kg)<input name="startWeight" type="text" inputmode="decimal" autocomplete="off" placeholder="ex. 88" value="${p.startWeight || ''}"></label>
         <label class="f">Poids cible (kg)<input name="goalWeight" type="text" inputmode="decimal" autocomplete="off" placeholder="ex. 78" value="${p.goalWeight || ''}"></label>
       </div>
       <label class="f">Taille (cm) · optionnel<input name="height" type="number" min="100" max="250" inputmode="numeric" placeholder="ex. 175" value="${p.height || ''}"></label>
       <div class="ob-preview" id="obMission"></div>
+      </div>
       <p class="ob-err" id="obErr"></p>
-      <div class="btns"><button type="button" class="btn ghost back" data-ob="prev">←</button><button type="button" class="btn primary" data-ob="next">Continuer →</button></div>
+      <div class="btns"><button type="button" class="btn ghost back" data-ob="prev">←</button><button type="button" class="btn primary" data-ob="next" id="obNext1">Continuer →</button></div>
     </section>
 
     <section class="ob-step" data-step="2">
@@ -1060,6 +1116,11 @@ function obSuggest() {
 // Aperçus en direct : nom de la mission et rythme par semaine
 function obUpdate() {
   const v = obValues();
+  // Sans suivi du poids : pas d'étape « échéance », on lance directement l'aventure
+  $('#obWeight').hidden = !v.weightTracking;
+  $('#obNext1').textContent = v.weightTracking ? 'Continuer →' : 'Lancer l\'aventure 🚀';
+  $('.ob-dots').classList.toggle('two', !v.weightTracking);
+  $('#obStepLabel').textContent = v.weightTracking ? 'Étape 2 / 3' : 'Étape 2 / 2';
   const okWeights = !profileError({ startWeight: v.startWeight, goalWeight: v.goalWeight });
   $('#obMission').innerHTML = okWeights
     ? `<div class="eyebrow">Ta mission</div><div class="big grad-text">Opération ${fmtNum(v.goalWeight)} kg</div><div class="muted small">${fmtNum(v.startWeight)} → ${fmtNum(v.goalWeight)} kg · ${fmtNum(v.startWeight - v.goalWeight)} kg à perdre</div>`
@@ -1077,6 +1138,7 @@ function obUpdate() {
 function obNext() {
   if (obStep === 1) {
     const v = obValues();
+    if (!v.weightTracking) return obFinish();
     const err = profileError({ startWeight: v.startWeight, goalWeight: v.goalWeight });
     $('#obErr').textContent = err;
     if (err) return;
@@ -1087,15 +1149,16 @@ function obNext() {
 function obFinish() {
   const v = obValues();
   const err = profileError(v);
-  $('#obErr2').textContent = err;
+  $(v.weightTracking ? '#obErr2' : '#obErr').textContent = err;
   if (err) return;
   $('#onboard').classList.remove('open');
   $('#onboard').innerHTML = '';
   obStep = 0;
-  // On ne touche qu'au profil : les séances et pesées éventuelles sont conservées
-  commit(d => { d.profile = v; d.onboarded = true; }, { silent: true });
+  // On ne touche qu'au profil : les séances et pesées éventuelles sont conservées.
+  // Sans suivi du poids, les champs de poids éventuels (import) restent tels quels, masqués.
+  commit(d => { d.profile = v.weightTracking ? { ...d.profile, ...v } : { ...d.profile, name: v.name, weightTracking: false }; d.onboarded = true; }, { silent: true });
   go('home');
-  toast('🚀', `Mission « Opération ${fmtNum(v.goalWeight)} kg » lancée !`, 'badge');
+  toast('🚀', v.weightTracking ? `Mission « Opération ${fmtNum(v.goalWeight)} kg » lancée !` : 'Ton aventure commence !', 'badge');
 }
 
 // ---------- 5. Séances, pesées, import / export ----------
@@ -2148,6 +2211,14 @@ document.addEventListener('click', e => {
   switch (a.dataset.action) {
     case 'log': return openLog(a.dataset.type ? { type: a.dataset.type, duration: a.dataset.type === 'walk' ? 30 : a.dataset.type === 'run' ? 20 : 40 } : {});
     case 'declare': return openDeclare();
+    case 'weight-on':
+      commit(d => { d.profile = { ...d.profile, weightTracking: true }; }, { silent: true });
+      toast('⚖️', wOn() ? 'Suivi du poids activé' : 'Suivi du poids activé : complète ton profil', 'badge');
+      return go('goals');
+    case 'weight-off':
+      if (!confirm('Masquer le suivi du poids ?\n\nTes pesées, objectifs, XP, quêtes et succès sont conservés. Tu pourras le réactiver à tout moment.')) return;
+      commit(d => { d.profile = { ...d.profile, weightTracking: false }; }, { silent: true });
+      return toast('✓', 'Suivi du poids désactivé · données conservées', 'badge');
     case 'swap': return openLog({ type: 'walk', duration: 30, swap: true });
     case 'coach-back': return coachAnswer('step-back', a.dataset.reason);
     case 'coach-keep': return coachAnswer('keep', a.dataset.reason);
@@ -2236,7 +2307,14 @@ document.addEventListener('submit', e => {
   if (e.target.id === 'profileForm') {
     e.preventDefault();
     const f = e.target;
+    // Suivi du poids désactivé : seul le nom change, les poids et objectifs sont conservés
+    if (!data.profile.weightTracking) {
+      const name = f.pname.value.replace(/[<>]/g, '').trim().slice(0, 20);
+      commit(d => { d.profile = { ...d.profile, name }; });
+      return toast('✓', 'Profil mis à jour', 'badge');
+    }
     const profile = {
+      weightTracking: true,
       name: f.pname.value.replace(/[<>]/g, '').trim().slice(0, 20),
       startWeight: Math.round(parseDec(f.startWeight.value) * 10) / 10, goalWeight: Math.round(parseDec(f.goalWeight.value) * 10) / 10,
       bonusGoal: f.bonusGoal.value.trim() ? Math.round(parseDec(f.bonusGoal.value) * 10) / 10 : null,

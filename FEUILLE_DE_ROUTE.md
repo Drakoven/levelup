@@ -41,7 +41,17 @@ sauvegarde avant toute migration, tests automatisés, compte rendu à chaque ét
 - Résumé `gps { coverage, gaps, points, rejected, uncoveredSec }` enregistré avec la séance.
 - Limite PWA : sur iPhone, le GPS s'arrête quand l'écran est verrouillé (il faut Capacitor).
 
-### Version 2.10.0 — Étape 6.2a : sauvegarde des parcours GPS (en attente de validation)
+### Version 2.11.0 — Étape 6.2b : carte interactive (en attente de validation)
+- Leaflet 1.9.4 intégré (`vendor/leaflet/`, licence BSD-2, empreinte npm vérifiée), disponible hors ligne.
+- Fond OpenStreetMap (https://tile.openstreetmap.org), mention « © OpenStreetMap contributors »,
+  tuiles demandées seulement à l'ouverture de la carte, aucun préchargement, cache du navigateur.
+- Tracé enregistré en jaune ; liaisons indicatives : rouge pointillé (coupure GPS), gris pointillé
+  (pause volontaire, reprise du filtre) avec cause et durée ; marqueurs départ / arrivée, pause,
+  arrêt prolongé, coupure.
+- Accès depuis le journal (seulement si le parcours existe) et depuis le bilan de fin de séance.
+- Hors connexion : fond neutre, tracé et marqueurs exacts.
+
+### Version 2.10.0 — Étape 6.2a : sauvegarde des parcours GPS ✅
 - Positions retenues par le filtre enregistrées par séance dans IndexedDB (`levelup-routes`),
   encodage compact sans perte (~11 octets par position, ~40 Ko par heure), relié par `routeId`.
 - Coupures, pauses et arrêts prolongés (≥ 2 min immobile avec signal) enregistrés séparément.

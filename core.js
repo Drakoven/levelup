@@ -1702,6 +1702,50 @@
     return { ...route, segments: route.segs.map(sg => decodeSegment(sg, route.t0)) };
   }
 
+  // ---------- Carte d'un parcours (étape 6.2b) ----------
+  // Prépare tout ce que la carte affiche, sans rien recalculer du suivi :
+  //   track  : tronçons réellement enregistrés et comptés (trait jaune)
+  //   links  : liaisons INDICATIVES entre deux tronçons, jamais comptées :
+  //            'gap'    → coupure réelle du signal GPS (rouge pointillé)
+  //            'pause'  → pause volontaire (gris pointillé)
+  //            'filtre' → reprise du filtre après des positions aberrantes (gris pointillé)
+  //   start / end, pauses (marqueurs ⏸), stops (arrêts prolongés), bounds (cadrage)
+  function routeMapModel(route) {
+    const r = route && route.segments ? route : decodeRoute(route);
+    const segs = r.segments.filter(sg => sg.length);
+    const track = segs.map(sg => sg.map(p => [p[1], p[2]]));
+    const pauses = (r.pauses || []).map(p => ({ from: p[0], to: p[1] }));
+    const links = [];
+    for (let i = 0; i + 1 < segs.length; i++) {
+      const a = segs[i][segs[i].length - 1], b = segs[i + 1][0];
+      const from = [a[1], a[2]], to = [b[1], b[2]];
+      // Coupure : enregistrée au moment où le signal revient, sur la 1re position du tronçon suivant
+      const gap = (r.gaps || []).find(g => g.to === b[0] && g.from >= a[0] - 1 && g.from <= b[0]);
+      if (gap) { links.push({ type: 'gap', from, to, t1: gap.from, t2: gap.to, ms: gap.to - gap.from }); continue; }
+      // Pause volontaire comprise entre les deux tronçons
+      const pause = pauses.find(p => p.from >= a[0] && p.to <= b[0]);
+      if (pause) { links.push({ type: 'pause', from, to, t1: pause.from, t2: pause.to, ms: pause.to - pause.from }); continue; }
+      // Sinon : le filtre est reparti d'un nouveau point après plusieurs positions aberrantes
+      links.push({ type: 'filtre', from, to, t1: a[0], t2: b[0], ms: b[0] - a[0] });
+    }
+    const all = segs.flat();
+    // Marqueur de pause : à la dernière position connue avant la pause (sinon la première après)
+    const pauseMarks = pauses.map(p => {
+      const before = all.filter(q => q[0] <= p.from).pop(), after = all.find(q => q[0] >= p.to);
+      const at = before || after;
+      return at ? { lat: at[1], lon: at[2], from: p.from, to: p.to, ms: p.to - p.from } : null;
+    }).filter(Boolean);
+    const stops = (r.stops || []).map(x => ({ lat: x.lat, lon: x.lon, from: x.from, to: x.to, ms: x.to - x.from }));
+    const pts = [...all.map(q => [q[1], q[2]]), ...stops.map(x => [x.lat, x.lon])];
+    const bounds = pts.length ? [[Math.min(...pts.map(q => q[0])), Math.min(...pts.map(q => q[1]))], [Math.max(...pts.map(q => q[0])), Math.max(...pts.map(q => q[1]))]] : null;
+    return {
+      track, links, pauses: pauseMarks, stops, bounds,
+      start: all.length ? { lat: all[0][1], lon: all[0][2], t: all[0][0] } : null,
+      end: all.length ? { lat: all[all.length - 1][1], lon: all[all.length - 1][2], t: all[all.length - 1][0] } : null,
+      points: all.length,
+    };
+  }
+
   // Validation d'un parcours (import, lecture) : renvoie une copie propre ou null
   function normRoute(raw) {
     try {
@@ -1862,7 +1906,7 @@
   }
 
   return {
-    GPS, haversine, createTrack, trackAddFix, trackPause, trackResume, gpsSignal, trackSummary, gpsSessionInfo, gpsPartial, DIAG_KEYS, STOP_MIN_MS, trackStops, ROUTE_VERSION, encodeInts, decodeInts, encodeSegment, decodeSegment, buildRoute, decodeRoute, normRoute, routeBytes, activePeriods, isValidTrack, gpsErrorMessage,
+    GPS, haversine, createTrack, trackAddFix, trackPause, trackResume, gpsSignal, trackSummary, gpsSessionInfo, gpsPartial, DIAG_KEYS, STOP_MIN_MS, trackStops, ROUTE_VERSION, encodeInts, decodeInts, encodeSegment, decodeSegment, buildRoute, decodeRoute, normRoute, routeBytes, routeMapModel, activePeriods, isValidTrack, gpsErrorMessage,
     QUEST_XP, CHAPTERS, EPICS, dailyQuestFor, weeklyQuestsFor, deriveQuests, deriveGame,
     BADGE_CATS, REWARDS, WEIGHT_QUESTS_UNTIL, weightConfigured, weightOn, badgeProgress, statsReport, MEASURED_SOURCES, monthKey, shiftMonth,
     XP, WEEKLY_TARGET, LIMITS, LEVELS, PROGRAM, PROGRAM_STEPS, WARMUP, COOLDOWN, BADGES, HEALTHY_PACE, SCHEMA_VERSION, DAY,

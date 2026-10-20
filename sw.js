@@ -13,11 +13,12 @@
 
    ⚠️ Changer VERSION à chaque modification des fichiers de l'app.
    ========================================================= */
-const VERSION = '2.10.0';
+const VERSION = '2.11.0';
 const APP_CACHE = `levelup-app-${VERSION}`;
 const FONT_CACHE = 'levelup-fonts';
 const APP_FILES = [
   './', './index.html', './style.css', './core.js', './app.js', './manifest.json', './icon.svg',
+  './vendor/leaflet/leaflet.js', './vendor/leaflet/leaflet.css', // carte des parcours (hors ligne)
   './icons/apple-touch-icon.png', './icons/icon-192.png', './icons/icon-512.png', './icons/icon-maskable-512.png',
 ];
 

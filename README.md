@@ -40,7 +40,7 @@ Application en HTML, CSS et JavaScript natifs, sans dépendance.
 - `sw.js` : fonctionnement hors connexion et mises à jour.
 
 ```bash
-npm test          # 273 tests automatisés (dont 4 « à faire » : correction du filtre de vitesse) (Node.js 18 ou plus)
+npm test          # 282 tests automatisés (dont 4 « à faire » : correction du filtre de vitesse) (Node.js 18 ou plus)
 npm start         # serveur local sur http://localhost:5173
 ```
 

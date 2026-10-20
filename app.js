@@ -94,6 +94,7 @@ const routesApi = {
   get: id => idb('routes', 'readonly', st => st.get(id)),
   del: id => idb('routes', 'readwrite', st => st.delete(id)),
   all: () => idb('routes', 'readonly', st => st.getAll()),
+  keys: () => idb('routes', 'readonly', st => st.getAllKeys()),
   putDraft: d => idb('drafts', 'readwrite', st => st.put({ ...d, id: DRAFT_ID })),
   getDraft: () => idb('drafts', 'readonly', st => st.get(DRAFT_ID)),
   delDraft: () => idb('drafts', 'readwrite', st => st.delete(DRAFT_ID)),
@@ -102,6 +103,13 @@ const isQuota = e => !!e && (e.name === 'QuotaExceededError' || /quota|space|esp
 const routeErrorMsg = e => isQuota(e)
   ? 'Espace de stockage plein : la séance est enregistrée, mais pas son parcours GPS. Libère de l\'espace sur le téléphone.'
   : 'Parcours GPS non enregistré (stockage indisponible). La séance, elle, est bien enregistrée.';
+// Parcours réellement présents sur cet appareil (le journal n'affiche « Carte » que pour eux)
+let knownRoutes = null;
+function refreshKnownRoutes() {
+  return routesApi.keys().then(keys => { knownRoutes = new Set(keys); }).catch(() => { knownRoutes = new Set(); })
+    .then(() => { if (typeof renderTrain === 'function' && data && data.onboarded) renderTrain(); });
+}
+
 // Demande au navigateur de ne pas effacer les parcours en cas de manque d'espace (une fois)
 function askPersist() {
   try { if (navigator.storage && navigator.storage.persist && !storage.get('levelup-persist')) { storage.set('levelup-persist', '1'); navigator.storage.persist().catch(() => {}); } } catch (e) { /* ignore */ }
@@ -450,8 +458,9 @@ function renderTrain() {
         <div class="h-ic ${s.type}">${TYPE[s.type].icon}</div>
         <div class="h-main editable" data-action="edit" data-id="${esc(s.id)}" role="button" tabindex="0" aria-label="Modifier cette séance">
           <b>${TYPE[s.type].name}${progTag(s)}${s.mode === 'libre' ? ' · libre ⏱️' : ''}</b>
-          <div>${fmtDate(s.date)} · ${s.duration} min${s.km ? ` · ${fmtNum(s.km)} km${s.distance && s.distance.source === 'gps' ? (C.gpsPartial(s) ? ` 📍 partiel (${Math.round(s.gps.coverage * 100)} %)` : ' 📍') : ''}` : ''}${s.routeId ? ' · 🗺️ parcours' : ''} · ${FEEL[s.feel] || ''}${s.swap ? ' · remplace une course' : ''}</div>
+          <div>${fmtDate(s.date)} · ${s.duration} min${s.km ? ` · ${fmtNum(s.km)} km${s.distance && s.distance.source === 'gps' ? (C.gpsPartial(s) ? ` 📍 partiel (${Math.round(s.gps.coverage * 100)} %)` : ' 📍') : ''}` : ''}${s.routeId && knownRoutes && !knownRoutes.has(s.routeId) ? ' · parcours absent de ce téléphone' : ''} · ${FEEL[s.feel] || ''}${s.swap ? ' · remplace une course' : ''}</div>
         </div>
+        ${s.routeId && knownRoutes && knownRoutes.has(s.routeId) ? `<button class="h-map" data-action="open-map" data-id="${esc(s.id)}" aria-label="Voir la carte du parcours">🗺️</button>` : ''}
         <span class="badge-xp lime">+${s.xp}</span>
         <button class="h-del" data-action="del" data-id="${esc(s.id)}" aria-label="Supprimer">×</button>
       </div>`).join('') : '<div class="empty">Aucune séance pour l\'instant.<br>Ta première ligne d\'histoire s\'écrit ici ✍️</div>'}
@@ -1103,6 +1112,178 @@ function renderAll() {
   if (pendingLevelUp) { showLevelUp(pendingLevelUp); pendingLevelUp = null; }
 }
 
+// ---------- Carte des parcours GPS (étape 6.2b) ----------
+// Leaflet (intégré à l'app, disponible hors ligne) + fond OpenStreetMap.
+// Règles d'OpenStreetMap respectées : adresse officielle en https, mention « © OpenStreetMap
+// contributors » toujours visible, tuiles demandées uniquement pour la zone affichée et seulement
+// quand la carte est ouverte, aucun préchargement, cache normal du navigateur (le service worker
+// ne touche pas aux tuiles). Sans réseau : fond neutre, le tracé et les marqueurs restent exacts.
+const MAP_TILES = {
+  url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+  attribution: '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors',
+  maxZoom: 19,
+};
+const MAP_COLORS = { track: '#ffd23f', outline: '#14121f', gap: '#ff4d5e', grey: '#a3a7bd' };
+let leafletP = null, mapState = null;
+
+function loadLeaflet() {
+  if (window.L && window.L.map) return Promise.resolve(window.L);
+  if (leafletP) return leafletP;
+  leafletP = new Promise((ok, ko) => {
+    if (!document.querySelector('link[data-leaflet]')) {
+      const css = document.createElement('link');
+      css.rel = 'stylesheet'; css.href = 'vendor/leaflet/leaflet.css'; css.dataset.leaflet = '1';
+      document.head.appendChild(css);
+    }
+    const sc = document.createElement('script');
+    sc.src = 'vendor/leaflet/leaflet.js';
+    sc.onload = () => (window.L && window.L.map ? ok(window.L) : ko(new Error('Leaflet illisible')));
+    sc.onerror = () => { leafletP = null; ko(new Error('Leaflet indisponible')); };
+    document.head.appendChild(sc);
+  });
+  return leafletP;
+}
+
+const fmtHeure = ms => new Date(ms).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+const LINK_TEXT = {
+  gap: ['⚠️ Coupure du signal GPS', 'Ligne droite indicative : ce trajet n\'a pas été mesuré, il n\'est pas compté dans la distance.'],
+  pause: ['⏸ Pause volontaire', 'Liaison indicative : un éventuel déplacement pendant la pause n\'est pas compté.'],
+  filtre: ['〰️ Reprise du filtre GPS', 'Positions aberrantes écartées : liaison indicative, non comptée dans la distance.'],
+};
+function mapPopup(title, ms, t1, t2, note) {
+  return `<div class="map-pop"><b>${title}</b>${Number.isFinite(ms) && ms > 0 ? `<span>Durée : ${fmtMinSec(ms)}</span>` : ''}` +
+    `${Number.isFinite(t1) && Number.isFinite(t2) ? `<span>De ${fmtHeure(t1)} à ${fmtHeure(t2)}</span>` : ''}${note ? `<small>${note}</small>` : ''}</div>`;
+}
+const mapIcon = (L, cls, html) => L.divIcon({ className: `map-mk ${cls}`, html: `<span>${html}</span>`, iconSize: [30, 30], iconAnchor: [15, 15], popupAnchor: [0, -14] });
+
+// Ouvre la carte d'un parcours (enregistré ou en cours de bilan)
+async function openRouteMap(route, info = {}) {
+  let model;
+  try { model = C.routeMapModel(route); } catch (e) { return toast('⚠️', 'Parcours illisible sur cet appareil', 'badge'); }
+  if (!model.points) return toast('🗺️', 'Aucune position GPS enregistrée pour cette séance', 'badge');
+  closeRouteMap();
+  const v = document.createElement('div');
+  v.className = 'map-view';
+  v.id = 'mapView';
+  v.setAttribute('role', 'dialog');
+  v.setAttribute('aria-label', 'Carte du parcours');
+  v.innerHTML = `
+    <div class="map-head">
+      <div class="map-title"><b>${esc(info.title || 'Parcours')}</b><span>${esc(info.sub || '')}</span></div>
+      <button class="map-close" data-action="close-map" aria-label="Fermer la carte">✕</button>
+    </div>
+    <div class="map-canvas" id="mapCanvas"></div>
+    <div class="map-note" id="mapNote" hidden></div>
+    <div class="map-legend">
+      <span><i class="lg-track"></i>Enregistré</span>
+      ${model.links.some(l => l.type === 'gap') ? '<span><i class="lg-gap"></i>Coupure GPS (indicatif)</span>' : ''}
+      ${model.links.some(l => l.type !== 'gap') ? '<span><i class="lg-grey"></i>Non compté (indicatif)</span>' : ''}
+      ${model.stops.length ? '<span>🟠 Arrêt</span>' : ''}${model.pauses.length ? '<span>⏸ Pause</span>' : ''}
+    </div>`;
+  document.body.appendChild(v);
+  document.body.classList.add('map-open');
+  const noteEl = v.querySelector('.map-note');
+  const note = txt => { noteEl.hidden = false; noteEl.textContent = txt; };
+  let L;
+  try { L = await loadLeaflet(); }
+  catch (e) { note('Carte indisponible : la bibliothèque n\'a pas pu être chargée. Réessaie une fois connecté.'); return; }
+  if (!v.isConnected || v.hidden) return; // fermée pendant le chargement
+  const map = L.map(v.querySelector('.map-canvas'), { preferCanvas: true, zoomControl: true, attributionControl: true, maxZoom: MAP_TILES.maxZoom, worldCopyJump: false });
+  map.attributionControl.setPrefix('<a href="https://leafletjs.com" target="_blank" rel="noopener">Leaflet</a>');
+  mapState = { map };
+  const offline = () => { v.classList.add('offline'); note('Fond de carte indisponible (hors connexion) : le tracé et les marqueurs restent exacts.'); };
+  if (navigator.onLine === false) { offline(); map.attributionControl.addAttribution(MAP_TILES.attribution); }
+  else {
+    const tiles = L.tileLayer(MAP_TILES.url, { maxZoom: MAP_TILES.maxZoom, attribution: MAP_TILES.attribution });
+    let loaded = 0, failed = 0;
+    tiles.on('tileload', () => { loaded++; if (v.classList.contains('offline')) { v.classList.remove('offline'); noteEl.hidden = true; } });
+    tiles.on('tileerror', () => { failed++; if (!loaded && failed >= 2) offline(); });
+    tiles.addTo(map);
+  }
+  const renderer = L.canvas({ padding: 0.5, tolerance: 12 });
+  mapState.renderer = renderer;
+  // Liaisons indicatives (sous le tracé), touchables pour connaître la cause et la durée
+  for (const l of model.links) {
+    const [title, why] = LINK_TEXT[l.type];
+    const color = l.type === 'gap' ? MAP_COLORS.gap : MAP_COLORS.grey;
+    L.polyline([l.from, l.to], { renderer, color, weight: 4, opacity: 0.95, dashArray: '2 9', lineCap: 'round' })
+      .bindPopup(mapPopup(title, l.ms, l.t1, l.t2, why)).addTo(map);
+    if (l.type === 'gap') {
+      const mid = [(l.from[0] + l.to[0]) / 2, (l.from[1] + l.to[1]) / 2];
+      L.marker(mid, { icon: mapIcon(L, 'mk-gap', '⚠️'), keyboard: false }).bindPopup(mapPopup(title, l.ms, l.t1, l.t2, why)).addTo(map);
+    }
+  }
+  // Parcours enregistré et compté : contour sombre + trait jaune
+  for (const seg of model.track) {
+    if (seg.length < 2) continue;
+    L.polyline(seg, { renderer, color: MAP_COLORS.outline, weight: 8, opacity: 0.55, interactive: false }).addTo(map);
+    L.polyline(seg, { renderer, color: MAP_COLORS.track, weight: 4.5, opacity: 1, interactive: false }).addTo(map);
+  }
+  for (const p of model.pauses) L.marker([p.lat, p.lon], { icon: mapIcon(L, 'mk-pause', '⏸'), keyboard: false })
+    .bindPopup(mapPopup('⏸ Pause volontaire', p.ms, p.from, p.to, 'Le chrono et la distance étaient arrêtés.')).addTo(map);
+  for (const x of model.stops) L.marker([x.lat, x.lon], { icon: mapIcon(L, 'mk-stop', '✋'), keyboard: false })
+    .bindPopup(mapPopup('🟠 Arrêt prolongé', x.ms, x.from, x.to, 'Signal GPS présent : ce n\'est pas une coupure.')).addTo(map);
+  // Boucle (départ et arrivée à moins de 25 m) : un seul marqueur, sinon l'un cacherait l'autre
+  const loop = model.start && model.end && C.haversine(model.start, model.end) < 25;
+  if (loop) L.marker([model.end.lat, model.end.lon], { icon: L.divIcon({ className: 'map-mk mk-end mk-loop', html: '<span>▶🏁</span>', iconSize: [40, 30], iconAnchor: [20, 15], popupAnchor: [0, -14] }), keyboard: false, zIndexOffset: 500 })
+    .bindPopup(mapPopup('Départ et arrivée', NaN, NaN, NaN, `Départ ${fmtHeure(model.start.t)} · arrivée ${fmtHeure(model.end.t)}`)).addTo(map);
+  else {
+    if (model.start) L.marker([model.start.lat, model.start.lon], { icon: mapIcon(L, 'mk-start', '▶'), keyboard: false })
+      .bindPopup(mapPopup('Départ', NaN, NaN, NaN, fmtHeure(model.start.t))).addTo(map);
+    if (model.end) L.marker([model.end.lat, model.end.lon], { icon: mapIcon(L, 'mk-end', '🏁'), keyboard: false, zIndexOffset: 500 })
+      .bindPopup(mapPopup('Arrivée', NaN, NaN, NaN, fmtHeure(model.end.t))).addTo(map);
+  }
+  // Cadrage automatique sur tout le parcours
+  const b = L.latLngBounds(model.bounds);
+  if (b.getNorthEast().distanceTo(b.getSouthWest()) < 30) map.setView(b.getCenter(), 17);
+  else map.fitBounds(b, { padding: [36, 36], maxZoom: 17 });
+}
+
+function closeRouteMap() {
+  const st = mapState;
+  mapState = null;
+  const v = document.getElementById('mapView');
+  if (v) { v.hidden = true; v.querySelectorAll('[id]').forEach(e => e.removeAttribute('id')); v.removeAttribute('id'); } // disparaît tout de suite
+  document.body.classList.remove('map-open');
+  // Leaflet 1.9 termine ses animations de zoom après coup : détruire la carte pendant un zoom
+  // provoque des erreurs internes. On la libère donc une fois les animations terminées.
+  setTimeout(() => {
+    if (st && st.map) {
+      try { st.map.stop(); } catch (e) { /* ignore */ }
+      const r = st.renderer;
+      if (r) {
+        r._redraw = () => {}; // dessin tardif demandé pendant la destruction : ignoré
+        if (r._redrawRequest && window.L) { window.L.Util.cancelAnimFrame(r._redrawRequest); r._redrawRequest = null; }
+      }
+      try { st.map.remove(); } catch (e) { /* ignore */ }
+    }
+    if (v) v.remove();
+  }, 450);
+}
+
+// Depuis le journal : parcours enregistré sur l'appareil
+function openSessionMap(sessionId) {
+  const s = D.sessionsById[sessionId] || data.sessions.find(x => x.id === sessionId);
+  if (!s || !s.routeId) return;
+  routesApi.get(s.routeId).then(raw => {
+    const route = raw && C.normRoute(raw);
+    if (!route) { toast('🗺️', 'Ce parcours n\'est plus disponible sur ce téléphone', 'badge'); return refreshKnownRoutes(); }
+    const km = s.distance ? s.distance.km : 0;
+    openRouteMap(route, { title: `${TYPE[s.type].name} libre · ${fmtDate(s.date)}`,
+      sub: `${km ? `${fmtNum(km, 2)} km · ` : ''}${s.duration} min${s.gps ? ` · GPS ${Math.round(s.gps.coverage * 100)} %` : ''}` });
+  }).catch(() => toast('⚠️', 'Parcours illisible (stockage indisponible)', 'badge'));
+}
+
+// Depuis le bilan de fin de séance : aperçu du parcours avant enregistrement
+function previewRunnerMap() {
+  if (!runner || !runner.gps || !runner.gps.track || !runner.end) return;
+  try {
+    const route = C.buildRoute(runner.gps.track, runner.t, runner.end.at, { id: 'apercu', sessionId: null });
+    const st = C.freeState(runner.t, runner.end.at);
+    openRouteMap(route, { title: `${FREE_NAME[runner.kind]} · aperçu`, sub: `${fmtNum(route.km, 2)} km · ${fmtMinSec(st.activeMs)} · GPS ${Math.round(route.coverage * 100)} %` });
+  } catch (e) { toast('⚠️', 'Aperçu du parcours impossible', 'badge'); }
+}
+
 // ---------- 4. Premier lancement : "Crée ton personnage" ----------
 // Chacun saisit son poids actuel, son poids cible et son échéance.
 function obValues() {
@@ -1405,7 +1586,7 @@ function deleteSession(id) {
   const s = data.sessions.find(x => x.id === id);
   if (!s || !confirm('Supprimer cette séance ? L\'XP, les bonus et les succès seront recalculés.')) return;
   commit(d => { d.sessions = d.sessions.filter(x => x.id !== id); }, { silent: true });
-  if (s.routeId) routesApi.del(s.routeId).catch(() => {});
+  if (s.routeId) routesApi.del(s.routeId).catch(() => {}).then(refreshKnownRoutes);
   toast('✓', 'Séance supprimée · totaux recalculés', 'badge');
 }
 
@@ -1490,6 +1671,7 @@ async function importFile(file) {
   renderAll();
   go('home');
   toast('✓', `Sauvegarde importée${routesMsg}`, 'badge');
+  refreshKnownRoutes();
 }
 
 function restoreBackup() {
@@ -2207,6 +2389,7 @@ function drawFreeSummary() {
         <div class="tile"><div class="v" id="sumPace">—</div><div class="l" id="sumPaceL">Allure moyenne</div></div>
       </div>
       <p class="small muted pace-note" id="sumPaceNote"></p>
+      ${runner.gps && runner.gps.track && runner.gps.track.segments.some(sg => sg.length) ? '<button class="btn ghost block" style="margin-top:12px" data-action="preview-map">🗺️ Voir le parcours</button>' : ''}
       ${tooShort ? '<p class="ob-err" style="margin-top:14px">Moins d\'une minute d\'effort : rien à enregistrer.</p>' : `
       <form id="sumForm" novalidate style="margin-top:16px">
         <div class="grid-2">
@@ -2276,6 +2459,7 @@ async function saveFreeSummary() {
   closeRunner();
   commit(d => d.sessions.push({ id, createdAt: Date.now(), ...entry }));
   // Affiché après les gains d'XP : l'avertissement reste visible (3 notifications au plus à l'écran)
+  if (entry.routeId) refreshKnownRoutes();
   if (routeErr) toast('⚠️', routeErrorMsg(routeErr), 'badge');
   else if (entry.routeId) toast('🗺️', 'Parcours GPS enregistré sur ton téléphone', 'badge');
 }
@@ -2427,6 +2611,9 @@ document.addEventListener('click', e => {
     case 'stats-metric': ui.statsMetric = a.dataset.v; return renderStats();
     case 'weight-range': ui.weightRange = a.dataset.v; return renderStats();
     case 'export': return exportData();
+    case 'open-map': return openSessionMap(a.dataset.id);
+    case 'preview-map': return previewRunnerMap();
+    case 'close-map': return closeRouteMap();
     case 'import': return $('#importFile').click();
     case 'restore': return restoreBackup();
     case 'apply-update': return applyUpdate();
@@ -2574,4 +2761,5 @@ renderAll();
 go(location.hash.slice(1) || 'home');
 if (startupNotice) toast('ℹ️', startupNotice, 'badge');
 if (data.onboarded) restoreRunner();
+refreshKnownRoutes(); // boutons « carte » du journal
 registerSW();

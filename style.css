@@ -550,3 +550,41 @@ label.f input[type=range] { padding: 0; min-height: 0; height: 28px; border: 0; 
 .ob-check { margin: 4px 0 14px; }
 .ob-weight[hidden] { display: none; }
 .ob-dots.two i:last-child { display: none; }
+
+/* ---------- Carte des parcours (2.11.0) ---------- */
+body.map-open { overflow: hidden; }
+.h-map { padding: 6px 4px; font-size: 18px; line-height: 1; }
+.map-view { position: fixed; inset: 0; z-index: 65; display: flex; flex-direction: column; background: var(--bg); }
+.map-head { display: flex; align-items: center; gap: 12px; padding: calc(10px + env(safe-area-inset-top, 0px)) 16px 10px; border-bottom: 1px solid var(--border); background: rgba(7, 7, 12, .92); }
+.map-title { flex: 1; min-width: 0; display: grid; }
+.map-title b { font-size: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.map-title span { font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.map-close { width: 44px; height: 44px; border-radius: 50%; background: var(--card-2); border: 1px solid var(--border); font-size: 18px; flex: none; }
+.map-canvas { flex: 1; min-height: 0; background: #1b1a26; }
+.map-view .leaflet-container { background: #1b1a26; font: inherit; touch-action: none; }
+/* Hors connexion : fond neutre avec une grille légère, le tracé reste lisible */
+.map-view.offline .leaflet-container { background-color: #16151f; background-image: linear-gradient(rgba(255,255,255,.05) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.05) 1px, transparent 1px); background-size: 32px 32px; }
+.map-view.offline .leaflet-tile-pane { display: none; }
+.map-note { padding: 8px 16px; font-size: 13px; color: var(--text); background: rgba(255, 77, 94, .14); border-top: 1px solid rgba(255, 77, 94, .35); }
+.map-note[hidden] { display: none; }
+.map-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 10px 16px calc(10px + env(safe-area-inset-bottom, 0px)); font-size: 12px; color: var(--muted); border-top: 1px solid var(--border); }
+.map-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.map-legend i { display: inline-block; width: 22px; height: 0; border-top: 4px solid #ffd23f; border-radius: 2px; }
+.map-legend i.lg-gap { border-top: 4px dotted #ff4d5e; }
+.map-legend i.lg-grey { border-top: 4px dotted #a3a7bd; }
+/* Marqueurs (dessinés en HTML : aucune image à télécharger) */
+.map-mk { background: none; border: 0; }
+.map-mk span { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; font-size: 14px; line-height: 1; border: 2px solid #fff; box-shadow: 0 2px 8px rgba(0,0,0,.45); background: #2a2838; color: #fff; }
+.map-mk.mk-start span { background: #22c55e; font-size: 12px; }
+.map-mk.mk-end span { background: #f4f4f8; }
+.map-mk.mk-gap span { background: #ff4d5e; font-size: 13px; }
+.map-mk.mk-pause span { background: #6b6f86; }
+.map-mk.mk-stop span { background: #f59e0b; }
+.map-pop { display: grid; gap: 3px; font-size: 13px; line-height: 1.35; color: #111; min-width: 170px; }
+.map-pop small { color: #555; font-size: 12px; }
+.map-view .leaflet-popup-content { margin: 10px 12px; }
+.map-view .leaflet-control-attribution { font-size: 11px; background: rgba(255,255,255,.85); }
+.map-view .leaflet-control-zoom a { width: 36px; height: 36px; line-height: 36px; font-size: 20px; }
+.map-mk.mk-loop span { width: 40px; border-radius: 15px; font-size: 11px; letter-spacing: -1px; }
+.map-mk.mk-end span { color: #14121f; }
+.map-view[hidden] { display: none; }

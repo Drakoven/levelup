@@ -41,7 +41,17 @@ sauvegarde avant toute migration, tests automatisés, compte rendu à chaque ét
 - Résumé `gps { coverage, gaps, points, rejected, uncoveredSec }` enregistré avec la séance.
 - Limite PWA : sur iPhone, le GPS s'arrête quand l'écran est verrouillé (il faut Capacitor).
 
-### Version 2.9.0 — Suivi du poids facultatif (en attente de validation)
+### Version 2.10.0 — Étape 6.2a : sauvegarde des parcours GPS (en attente de validation)
+- Positions retenues par le filtre enregistrées par séance dans IndexedDB (`levelup-routes`),
+  encodage compact sans perte (~11 octets par position, ~40 Ko par heure), relié par `routeId`.
+- Coupures, pauses et arrêts prolongés (≥ 2 min immobile avec signal) enregistrés séparément.
+- Copie de secours pendant la séance (toutes les 30 s et à la mise en arrière-plan).
+- Espace plein ou base indisponible : séance enregistrée sans parcours, message clair.
+- Export : parcours inclus seulement si la case est cochée ; import validé parcours par parcours.
+- Distance, filtre, chrono et annonces inchangés (comparaison sur 240 000 positions : 0 écart).
+- À venir : 6.2b carte interactive (Leaflet + OpenStreetMap), 6.2c image partageable.
+
+### Version 2.9.0 — Suivi du poids facultatif ✅
 - Réglage « Suivi du poids » (Objectifs) : désactivé par défaut pour les nouveaux joueurs,
   conservé pour les profils déjà configurés. Le désactiver masque seulement : pesées,
   objectifs, XP, quêtes et succès sont conservés.

@@ -1457,11 +1457,39 @@
   // Ajoute une position. Renvoie la décision : start, move, still, accuracy, jump, gap, paused, old, outside, invalid
   //   win (facultatif) : { from, to } — une position horodatée hors de la séance n'est jamais comptée
   function trackAddFix(tr, f, win) {
+    const anchor = tr.last ? { t: tr.last.t, lat: tr.last.lat, lon: tr.last.lon } : null;
     const res = addFix(tr, f, win);
     if (!tr.diag || typeof tr.diag !== 'object') tr.diag = emptyDiag();
     const k = DIAG_OF[res];
     tr.diag[k] = (tr.diag[k] || 0) + 1;
+    noteStop(tr, res, f, anchor);
     return res;
+  }
+
+  // Arrêts prolongés (étape 6.2a) : au moins 2 min d'immobilité AVEC un signal exploitable.
+  // Ils ne sont jamais confondus avec une coupure : une coupure (plus de 20 s sans position
+  // exploitable) termine l'arrêt en cours, et un arrêt ne s'étend que sur des positions « immobile ».
+  // Ce suivi ne change aucune décision du filtre : il se contente d'observer le résultat.
+  const STOP_MIN_MS = 120000;
+  function noteStop(tr, res, f, anchor) {
+    if (res === 'still') {
+      if (!tr.stopRun && anchor) tr.stopRun = { from: anchor.t, lat: anchor.lat, lon: anchor.lon, to: f.t };
+      else if (tr.stopRun) tr.stopRun.to = f.t;
+    } else if (res === 'move' || res === 'start' || res === 'gap' || res === 'paused') closeStop(tr);
+  }
+  function closeStop(tr) {
+    const r = tr.stopRun;
+    tr.stopRun = null;
+    if (!r || r.to - r.from < STOP_MIN_MS) return;
+    if (!Array.isArray(tr.stops)) tr.stops = [];
+    tr.stops.push({ from: r.from, to: r.to, lat: round(r.lat, 6), lon: round(r.lon, 6) });
+  }
+  // Arrêts terminés + arrêt en cours s'il dure déjà 2 min (sans modifier le suivi)
+  function trackStops(tr) {
+    const list = Array.isArray(tr.stops) ? tr.stops.slice() : [];
+    const r = tr.stopRun;
+    if (r && r.to - r.from >= STOP_MIN_MS) list.push({ from: r.from, to: r.to, lat: round(r.lat, 6), lon: round(r.lon, 6) });
+    return list;
   }
   function addFix(tr, f, win) {
     if (!validFix(f)) return 'invalid';
@@ -1504,7 +1532,7 @@
   }
 
   // Pause de la séance : rien ne compte, la reprise ouvre un nouveau tronçon
-  function trackPause(tr) { tr.paused = true; tr.last = null; return tr; }
+  function trackPause(tr) { closeStop(tr); tr.paused = true; tr.last = null; return tr; }
   function trackResume(tr) { tr.paused = false; tr.last = null; return tr; }
 
   // État du signal affiché : attente, bon, moyen, faible, perdu
@@ -1594,8 +1622,112 @@
     return !!tr && typeof tr === 'object' && (tr.kind === 'run' || tr.kind === 'walk') && Array.isArray(tr.segments) &&
       tr.segments.every(seg => Array.isArray(seg) && seg.every(p => Array.isArray(p) && p.length === 4 && p.every(Number.isFinite))) &&
       [tr.meters, tr.coveredMs, tr.fixes].every(Number.isFinite) && tr.meters >= 0 && tr.rejected && Array.isArray(tr.gaps) &&
-      (tr.covered === undefined || (Array.isArray(tr.covered) && tr.covered.every(c => Array.isArray(c) && c.length === 2 && c.every(Number.isFinite))));
+      (tr.covered === undefined || (Array.isArray(tr.covered) && tr.covered.every(c => Array.isArray(c) && c.length === 2 && c.every(Number.isFinite)))) &&
+      (tr.stops === undefined || (Array.isArray(tr.stops) && tr.stops.every(x => x && Number.isFinite(x.from) && Number.isFinite(x.to))));
   }
+
+  // ---------- Parcours GPS enregistrés (étape 6.2a) ----------
+  // Un parcours = les positions RETENUES par le filtre (celles qui ont servi au calcul de la
+  // distance), par tronçon, plus les coupures, pauses et arrêts prolongés. Il est stocké à part
+  // (IndexedDB), relié à la séance par routeId. Encodage compact SANS PERTE : écarts entiers
+  // (heure en ms, latitude et longitude au millionième de degré, précision en m), écrits en
+  // texte comme les « polylines » : environ 10 à 14 octets par position.
+  const ROUTE_VERSION = 1;
+  function encodeInts(nums) {
+    let out = '';
+    for (const n of nums) {
+      let v = n < 0 ? ~(n << 1) : n << 1;
+      if (!Number.isSafeInteger(n) || Math.abs(n) > 0x3fffffff) throw new Error('valeur hors limites');
+      while (v >= 0x20) { out += String.fromCharCode((0x20 | (v & 0x1f)) + 63); v >>>= 5; }
+      out += String.fromCharCode(v + 63);
+    }
+    return out;
+  }
+  function decodeInts(str) {
+    const out = []; let v = 0, shift = 0;
+    for (let i = 0; i < str.length; i++) {
+      const b = str.charCodeAt(i) - 63;
+      if (b < 0 || b > 63) throw new Error('parcours illisible');
+      v |= (b & 0x1f) << shift; shift += 5;
+      if (b < 0x20) { out.push(v & 1 ? ~(v >>> 1) : v >>> 1); v = 0; shift = 0; }
+      else if (shift > 30) throw new Error('parcours illisible');
+    }
+    if (shift) throw new Error('parcours illisible');
+    return out;
+  }
+  // Tronçon [[t, lat, lon, acc], ...] → texte. Le 1er point est complet (heure en écart à t0).
+  function encodeSegment(seg, t0) {
+    const ints = []; let pt = t0, pa = 0, po = 0;
+    for (const [t, lat, lon, acc] of seg) {
+      const a = Math.round(lat * 1e6), o = Math.round(lon * 1e6);
+      ints.push(Math.round(t) - pt, a - pa, o - po, Math.max(0, Math.min(9999, Math.round(acc))));
+      pt = Math.round(t); pa = a; po = o;
+    }
+    return encodeInts(ints);
+  }
+  function decodeSegment(str, t0) {
+    const ints = decodeInts(str);
+    if (ints.length % 4) throw new Error('parcours illisible');
+    const seg = []; let t = t0, a = 0, o = 0;
+    for (let i = 0; i < ints.length; i += 4) {
+      t += ints[i]; a += ints[i + 1]; o += ints[i + 2];
+      seg.push([t, a / 1e6, o / 1e6, ints[i + 3]]);
+    }
+    return seg;
+  }
+
+  // Construit le parcours à sauvegarder à partir du suivi GPS et du chrono libre
+  function buildRoute(tr, t, endAt, meta = {}) {
+    if (!isValidTrack(tr)) throw new Error('suivi GPS invalide');
+    const t0 = Math.round(t.startedAt);
+    const segs = tr.segments.filter(sg => sg.length);
+    const all = segs.flat();
+    const bbox = all.length ? [
+      Math.min(...all.map(p => p[1])), Math.min(...all.map(p => p[2])),
+      Math.max(...all.map(p => p[1])), Math.max(...all.map(p => p[2]))] : null;
+    const pauses = (Array.isArray(t.pauses) ? t.pauses : []).filter(p => Array.isArray(p) && p[1] > p[0]).map(p => [Math.round(p[0]), Math.round(p[1])]);
+    if (t.pausedAt !== null && t.pausedAt < endAt) pauses.push([Math.round(t.pausedAt), Math.round(endAt)]);
+    const sum = trackSummary(tr, t, endAt);
+    return {
+      v: ROUTE_VERSION, id: meta.id, sessionId: meta.sessionId || null, kind: tr.kind,
+      t0, endAt: Math.round(endAt),
+      segs: segs.map(sg => encodeSegment(sg, t0)),
+      gaps: tr.gaps.map(g => ({ from: Math.round(g.from), to: Math.round(g.to) })),
+      pauses, stops: trackStops(tr), bbox,
+      points: all.length, km: sum.km, coverage: sum.coverage,
+    };
+  }
+  // Parcours enregistré → points utilisables (tronçons [[t, lat, lon, acc]])
+  function decodeRoute(route) {
+    return { ...route, segments: route.segs.map(sg => decodeSegment(sg, route.t0)) };
+  }
+
+  // Validation d'un parcours (import, lecture) : renvoie une copie propre ou null
+  function normRoute(raw) {
+    try {
+      if (!raw || typeof raw !== 'object' || raw.v !== ROUTE_VERSION) return null;
+      if (typeof raw.id !== 'string' || !ID_RE.test(raw.id)) return null;
+      if (raw.sessionId !== null && raw.sessionId !== undefined && (typeof raw.sessionId !== 'string' || !ID_RE.test(raw.sessionId))) return null;
+      if (raw.kind !== 'run' && raw.kind !== 'walk') return null;
+      if (!Number.isFinite(raw.t0) || !Number.isFinite(raw.endAt) || raw.endAt < raw.t0 || raw.endAt - raw.t0 > 48 * 3600e3) return null;
+      if (!Array.isArray(raw.segs) || raw.segs.length > 5000 || !raw.segs.every(sg => typeof sg === 'string' && sg.length <= 2e6)) return null;
+      const segments = raw.segs.map(sg => decodeSegment(sg, raw.t0));
+      const pts = segments.flat();
+      if (pts.length > 200000 || !pts.every(p => Math.abs(p[1]) <= 90 && Math.abs(p[2]) <= 180)) return null;
+      const span = x => x && Number.isFinite(x.from) && Number.isFinite(x.to) && x.to >= x.from;
+      const gaps = (Array.isArray(raw.gaps) ? raw.gaps : []).filter(span).map(g => ({ from: Math.round(g.from), to: Math.round(g.to) }));
+      const pauses = (Array.isArray(raw.pauses) ? raw.pauses : []).filter(p => Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1]) && p[1] >= p[0]).map(p => [Math.round(p[0]), Math.round(p[1])]);
+      const stops = (Array.isArray(raw.stops) ? raw.stops : []).filter(x => span(x) && Math.abs(x.lat) <= 90 && Math.abs(x.lon) <= 180)
+        .map(x => ({ from: Math.round(x.from), to: Math.round(x.to), lat: round(x.lat, 6), lon: round(x.lon, 6) }));
+      const bbox = pts.length ? [Math.min(...pts.map(p => p[1])), Math.min(...pts.map(p => p[2])), Math.max(...pts.map(p => p[1])), Math.max(...pts.map(p => p[2]))] : null;
+      const km = round(num(raw.km), 2), cov = round(num(raw.coverage), 2);
+      return { v: ROUTE_VERSION, id: raw.id, sessionId: raw.sessionId || null, kind: raw.kind, t0: Math.round(raw.t0), endAt: Math.round(raw.endAt),
+        segs: raw.segs.slice(), gaps, pauses, stops, bbox, points: pts.length,
+        km: inRange(km, LIMITS.distance) ? km : 0, coverage: inRange(cov, [0, 1]) ? cov : 0 };
+    } catch (e) { return null; }
+  }
+  // Taille approximative d'un parcours une fois enregistré (octets)
+  const routeBytes = route => JSON.stringify(route).length;
 
   // Messages d'erreur de la géolocalisation (codes standard du navigateur)
   function gpsErrorMessage(code) {
@@ -1730,7 +1862,7 @@
   }
 
   return {
-    GPS, haversine, createTrack, trackAddFix, trackPause, trackResume, gpsSignal, trackSummary, gpsSessionInfo, gpsPartial, DIAG_KEYS, activePeriods, isValidTrack, gpsErrorMessage,
+    GPS, haversine, createTrack, trackAddFix, trackPause, trackResume, gpsSignal, trackSummary, gpsSessionInfo, gpsPartial, DIAG_KEYS, STOP_MIN_MS, trackStops, ROUTE_VERSION, encodeInts, decodeInts, encodeSegment, decodeSegment, buildRoute, decodeRoute, normRoute, routeBytes, activePeriods, isValidTrack, gpsErrorMessage,
     QUEST_XP, CHAPTERS, EPICS, dailyQuestFor, weeklyQuestsFor, deriveQuests, deriveGame,
     BADGE_CATS, REWARDS, WEIGHT_QUESTS_UNTIL, weightConfigured, weightOn, badgeProgress, statsReport, MEASURED_SOURCES, monthKey, shiftMonth,
     XP, WEEKLY_TARGET, LIMITS, LEVELS, PROGRAM, PROGRAM_STEPS, WARMUP, COOLDOWN, BADGES, HEALTHY_PACE, SCHEMA_VERSION, DAY,

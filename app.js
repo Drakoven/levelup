@@ -53,6 +53,60 @@ const storage = {
   del(k) { try { localStorage.removeItem(k); } catch (e) { /* ignore */ } },
 };
 
+// ----- Parcours GPS (étape 6.2a) : base IndexedDB séparée, sur cet appareil uniquement -----
+// « routes » : parcours enregistrés (reliés aux séances par routeId) ;
+// « drafts » : copie de secours du suivi en cours, écrite pendant la séance (fermeture inattendue).
+// Toute erreur (base indisponible, espace plein) est attrapée : la séance est toujours enregistrée.
+const ROUTES_DB = 'levelup-routes', DRAFT_ID = 'en-cours';
+let routesDbP = null;
+function routesDb() {
+  if (routesDbP) return routesDbP;
+  routesDbP = new Promise((ok, ko) => {
+    let req;
+    try { req = indexedDB.open(ROUTES_DB, 1); } catch (e) { return ko(e); }
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains('routes')) db.createObjectStore('routes', { keyPath: 'id' });
+      if (!db.objectStoreNames.contains('drafts')) db.createObjectStore('drafts', { keyPath: 'id' });
+    };
+    req.onsuccess = () => { const db = req.result; db.onversionchange = () => { db.close(); routesDbP = null; }; ok(db); };
+    req.onerror = () => ko(req.error || new Error('base indisponible'));
+    req.onblocked = () => ko(new Error('base bloquée'));
+  });
+  routesDbP.catch(() => { routesDbP = null; });
+  return routesDbP;
+}
+const withTimeout = (p, ms) => Promise.race([p, new Promise((_, ko) => setTimeout(() => ko(new Error('délai dépassé')), ms))]);
+function idb(store, mode, fn) {
+  return withTimeout(routesDb().then(db => new Promise((ok, ko) => {
+    let tx;
+    try { tx = db.transaction(store, mode); } catch (e) { return ko(e); }
+    let result;
+    try { const r = fn(tx.objectStore(store)); if (r) r.onsuccess = () => { result = r.result; }; } catch (e) { try { tx.abort(); } catch (x) { /* ignore */ } return ko(e); }
+    tx.oncomplete = () => ok(result);
+    tx.onerror = () => ko(tx.error || new Error('erreur de la base'));
+    tx.onabort = () => ko(tx.error || new Error('écriture annulée'));
+  })), 10000);
+}
+const routesApi = {
+  put: route => idb('routes', 'readwrite', st => st.put(route)),
+  putMany: list => idb('routes', 'readwrite', st => { list.forEach(r => st.put(r)); }),
+  get: id => idb('routes', 'readonly', st => st.get(id)),
+  del: id => idb('routes', 'readwrite', st => st.delete(id)),
+  all: () => idb('routes', 'readonly', st => st.getAll()),
+  putDraft: d => idb('drafts', 'readwrite', st => st.put({ ...d, id: DRAFT_ID })),
+  getDraft: () => idb('drafts', 'readonly', st => st.get(DRAFT_ID)),
+  delDraft: () => idb('drafts', 'readwrite', st => st.delete(DRAFT_ID)),
+};
+const isQuota = e => !!e && (e.name === 'QuotaExceededError' || /quota|space|espace/i.test(String(e.message || '')));
+const routeErrorMsg = e => isQuota(e)
+  ? 'Espace de stockage plein : la séance est enregistrée, mais pas son parcours GPS. Libère de l\'espace sur le téléphone.'
+  : 'Parcours GPS non enregistré (stockage indisponible). La séance, elle, est bien enregistrée.';
+// Demande au navigateur de ne pas effacer les parcours en cas de manque d'espace (une fois)
+function askPersist() {
+  try { if (navigator.storage && navigator.storage.persist && !storage.get('levelup-persist')) { storage.set('levelup-persist', '1'); navigator.storage.persist().catch(() => {}); } } catch (e) { /* ignore */ }
+}
+
 let startupNotice = null;
 let needsSave = false;
 
@@ -396,7 +450,7 @@ function renderTrain() {
         <div class="h-ic ${s.type}">${TYPE[s.type].icon}</div>
         <div class="h-main editable" data-action="edit" data-id="${esc(s.id)}" role="button" tabindex="0" aria-label="Modifier cette séance">
           <b>${TYPE[s.type].name}${progTag(s)}${s.mode === 'libre' ? ' · libre ⏱️' : ''}</b>
-          <div>${fmtDate(s.date)} · ${s.duration} min${s.km ? ` · ${fmtNum(s.km)} km${s.distance && s.distance.source === 'gps' ? (C.gpsPartial(s) ? ` 📍 partiel (${Math.round(s.gps.coverage * 100)} %)` : ' 📍') : ''}` : ''} · ${FEEL[s.feel] || ''}${s.swap ? ' · remplace une course' : ''}</div>
+          <div>${fmtDate(s.date)} · ${s.duration} min${s.km ? ` · ${fmtNum(s.km)} km${s.distance && s.distance.source === 'gps' ? (C.gpsPartial(s) ? ` 📍 partiel (${Math.round(s.gps.coverage * 100)} %)` : ' 📍') : ''}` : ''}${s.routeId ? ' · 🗺️ parcours' : ''} · ${FEEL[s.feel] || ''}${s.swap ? ' · remplace une course' : ''}</div>
         </div>
         <span class="badge-xp lime">+${s.xp}</span>
         <button class="h-del" data-action="del" data-id="${esc(s.id)}" aria-label="Supprimer">×</button>
@@ -1019,6 +1073,8 @@ function renderGoals() {
     <div class="section-title"><h2>Mes données</h2></div>
     <div class="card">
       <p class="small muted" style="margin:0 0 12px">Tout est sauvegardé sur cet appareil. Exporte régulièrement une copie de secours.</p>
+      <label class="check" style="margin:0 0 12px"><input type="checkbox" id="exportRoutes"> 🗺️ Inclure mes parcours GPS dans l'export</label>
+      <p class="small muted" style="margin:-6px 0 12px">Décoché par défaut : un parcours révèle tes lieux de sortie. <span id="routesInfo"></span></p>
       <div class="btns" style="margin:0">
         <button class="btn ghost" data-action="export">⬇ Exporter</button>
         <button class="btn ghost" data-action="import">⬆ Importer</button>
@@ -1027,6 +1083,17 @@ function renderGoals() {
       <button class="btn danger block" style="margin-top:10px" data-action="reset">Recommencer à zéro</button>
       <input type="file" id="importFile" accept="application/json,.json" hidden>
     </div>`;
+  fillRoutesInfo();
+}
+
+// Nombre et taille des parcours GPS enregistrés sur l'appareil (lu en arrière-plan)
+function fillRoutesInfo() {
+  routesApi.all().then(list => {
+    const el = $('#routesInfo');
+    if (!el) return;
+    const ko = Math.round(list.reduce((a, r) => a + C.routeBytes(r), 0) / 1024);
+    el.textContent = list.length ? `${list.length} parcours enregistré${list.length > 1 ? 's' : ''} sur ce téléphone (${ko < 1024 ? `${ko} Ko` : `${fmtNum(ko / 1024)} Mo`}).` : 'Aucun parcours enregistré pour l\'instant.';
+  }).catch(() => { const el = $('#routesInfo'); if (el) el.textContent = 'Parcours GPS indisponibles sur ce navigateur.'; });
 }
 
 function renderAll() {
@@ -1338,6 +1405,7 @@ function deleteSession(id) {
   const s = data.sessions.find(x => x.id === id);
   if (!s || !confirm('Supprimer cette séance ? L\'XP, les bonus et les succès seront recalculés.')) return;
   commit(d => { d.sessions = d.sessions.filter(x => x.id !== id); }, { silent: true });
+  if (s.routeId) routesApi.del(s.routeId).catch(() => {});
   toast('✓', 'Séance supprimée · totaux recalculés', 'badge');
 }
 
@@ -1354,8 +1422,20 @@ function deleteWeight(date) {
 }
 
 async function exportData() {
-  const json = C.serialize(data);
-  const name = `levelup-sauvegarde-${todayISO()}.json`;
+  let json = C.serialize(data), withRoutes = false;
+  if ($('#exportRoutes') && $('#exportRoutes').checked) {
+    try {
+      const ids = new Set(data.sessions.map(x => x.routeId).filter(Boolean));
+      const routes = (await routesApi.all()).filter(r => ids.has(r.id));
+      const obj = JSON.parse(json);
+      obj.routes = routes;
+      json = JSON.stringify(obj);
+      withRoutes = true;
+    } catch (e) {
+      if (!confirm('Les parcours GPS n\'ont pas pu être lus. Exporter quand même, sans les parcours ?')) return;
+    }
+  }
+  const name = `levelup-sauvegarde-${todayISO()}${withRoutes ? '-avec-parcours' : ''}.json`;
   const blob = new Blob([json], { type: 'application/json' });
   // Sur iPhone (surtout en mode application installée), le partage est plus fiable que le téléchargement
   const ios = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
@@ -1374,10 +1454,13 @@ async function exportData() {
 }
 
 async function importFile(file) {
-  let parsed;
+  let parsed, routes = [], badRoutes = 0;
   try {
-    if (file.size > 5e6) throw new Error('Fichier trop volumineux pour être une sauvegarde.');
-    parsed = C.normalizeData(JSON.parse(await file.text()));
+    if (file.size > 60e6) throw new Error('Fichier trop volumineux pour être une sauvegarde.');
+    const raw = JSON.parse(await file.text());
+    parsed = C.normalizeData(raw);
+    // Parcours GPS éventuels : validés un par un (un parcours abîmé est ignoré, pas le reste)
+    if (raw && Array.isArray(raw.routes)) for (const r of raw.routes) { const n = C.normRoute(r); if (n) routes.push(n); else badRoutes++; }
   } catch (e) {
     alert(`Import impossible : ${e instanceof SyntaxError ? 'ce fichier n\'est pas un fichier JSON valide.' : e.message}`);
     return;
@@ -1390,16 +1473,23 @@ async function importFile(file) {
     `• ${report.sessions} séance(s), ${report.weights} pesée(s)\n` +
     `• ${preview.xp} XP · niveau ${preview.level.n} (${preview.level.title})\n` +
     (dropped ? `• Ignorées car invalides : ${report.droppedSessions} séance(s), ${report.droppedWeights} pesée(s)\n` : '') +
+    (routes.length || badRoutes ? `• ${routes.length} parcours GPS${badRoutes ? ` (${badRoutes} illisible(s), ignoré(s))` : ''}\n` : '') +
     (incoming.onboarded ? '' : '• Profil incomplet : il te sera demandé de le compléter\n') +
     `\n⚠️ Tes données actuelles (${data.sessions.length} séance(s), ${data.weights.length} pesée(s)) seront remplacées.\nUne copie de secours est gardée sur cet appareil (bouton « Restaurer »).`;
   if (!confirm(msg)) return;
   backup('import');
+  // Parcours d'abord : s'ils ne peuvent pas être écrits, l'import des séances continue quand même
+  let routesMsg = '';
+  if (routes.length) {
+    try { await routesApi.putMany(routes); askPersist(); routesMsg = ` · ${routes.length} parcours restauré(s)`; }
+    catch (e) { routesMsg = ' · parcours non restaurés'; toast('⚠️', routeErrorMsg(e), 'badge'); }
+  }
   data = incoming;
   D = C.deriveGame(data);
   save();
   renderAll();
   go('home');
-  toast('✓', 'Sauvegarde importée', 'badge');
+  toast('✓', `Sauvegarde importée${routesMsg}`, 'badge');
 }
 
 function restoreBackup() {
@@ -1531,10 +1621,22 @@ function startRunner() {
   showRunner();
 }
 
-const persistRunner = () => {
+const persistRunner = (forceDraft = false) => {
   if (runner && runner.t) storage.set(TIMER_KEY, JSON.stringify({ t: runner.t, meta: runner.meta, stage: runner.stage, end: runner.end || null, measured: runner.measured || null,
     gps: runner.gps && runner.gps.track ? { on: !!runner.gps.on, track: runner.gps.track } : null }));
+  saveRouteDraft(forceDraft === true);
 };
+// Copie de secours du parcours en cours (IndexedDB), au plus toutes les 30 s et à la mise en
+// arrière-plan : si la PWA est fermée brutalement ou si le stockage local est plein, le suivi
+// est retrouvé à la réouverture. Simple copie : aucun calcul GPS n'est modifié.
+let draftAt = 0, draftWarned = false;
+function saveRouteDraft(force) {
+  if (!runner || runner.mode !== 'free' || !runner.t || !runner.gps || !runner.gps.track || !runner.gps.track.fixes) return;
+  if (!force && Date.now() - draftAt < 30000) return;
+  draftAt = Date.now();
+  routesApi.putDraft({ savedAt: Date.now(), t: runner.t, stage: runner.stage, end: runner.end || null, measured: runner.measured || null, track: runner.gps.track })
+    .catch(e => { if (!draftWarned && isQuota(e)) { draftWarned = true; toast('⚠️', 'Espace plein : la copie de secours du parcours n\'a pas pu être faite.', 'badge'); } });
+}
 
 function showRunner() {
   if (!runner) return;
@@ -1556,6 +1658,8 @@ function closeRunner() {
   try { if (runner.wake) runner.wake.release(); } catch (e) { /* ignore */ }
   runner = null;
   storage.del(TIMER_KEY);
+  draftAt = 0;
+  routesApi.delDraft().catch(() => {});
   const r = $('#runner');
   r.className = 'runner'; // retire aussi countdown / summary, qui forcent l'affichage
   r.innerHTML = '';
@@ -2053,6 +2157,14 @@ function freeEntry() {
   return { entry, km, st, gps: tr ? C.trackSummary(tr, runner.t, runner.end.at) : null };
 }
 
+// Arrêts prolongés (2 min ou plus, signal GPS présent) : à ne pas confondre avec une coupure
+function gpsStopsHtml() {
+  const stops = runner && runner.gps && runner.gps.track ? C.trackStops(runner.gps.track) : [];
+  if (!stops.length) return '';
+  const total = stops.reduce((a, x) => a + (x.to - x.from), 0);
+  return `<br>⏸ ${stops.length} arrêt${stops.length > 1 ? 's' : ''} prolongé${stops.length > 1 ? 's' : ''} (${fmtMinSec(total)} au total, signal GPS présent : ce ne sont pas des coupures).`;
+}
+
 // Détail de chaque position reçue (diagnostic des tests sur le terrain)
 function gpsDiagHtml(dg) {
   if (!dg) return '';
@@ -2074,6 +2186,7 @@ function drawFreeSummary() {
         <br>Séance couverte par le GPS : <b>${Math.round(gps.coverage * 100)} %</b>${gps.uncoveredMs >= 60000 ? ` (${fmtMinSec(gps.uncoveredMs)} sans position exploitable)` : ''}
         ${gps.gaps ? `<br>${plural(gps.gaps, 'interruption')} du suivi (coupure, écran verrouillé, rechargement ou signal perdu).` : ''}
         ${gps.rejected ? `<br>${plural(gps.rejected, 'position')} imprécise${gps.rejected > 1 ? 's' : ''} ignorée${gps.rejected > 1 ? 's' : ''}.` : ''}
+        ${gpsStopsHtml()}
         ${gpsDiagHtml(gps.diag)}
         ${gps.partial ? `<br>⚠️ <b>Couverture insuffisante</b> (moins de 80 %) : ta distance réelle est sans doute plus longue, mais seuls les ${fmtNum(gps.km, 2)} km suivis sont enregistrés — rien n'est ajouté. La séance sera marquée « GPS partiel ». Si tu corriges la distance, elle sera marquée « saisie », et la mesure GPS d\'origine sera gardée.` : ''}</div>`
     : '<div class="sum-status ko">📍 <b>Aucune distance GPS mesurée</b> (signal insuffisant ou interrompu). Tu peux saisir la distance : elle sera marquée « saisie ».</div>';
@@ -2137,15 +2250,34 @@ function updateFreeSummary() {
   $('#sumSave').textContent = `Enregistrer · +${xp} XP ⚡`;
 }
 
-function saveFreeSummary() {
-  if (!runner || runner.stage !== 'summary') return;
+async function saveFreeSummary() {
+  if (!runner || runner.stage !== 'summary' || runner.saving) return;
   const { entry, km } = freeEntry();
   const err = C.distanceError(entry.type, km, entry.duration);
   $('#sumErr').textContent = err;
   if (err) return;
   if (!confirmNewSession({ ...entry, km: entry.distance ? entry.distance.km : 0 })) return;
+  const id = C.newId();
+  // Parcours GPS : écrit AVANT la séance ; en cas d'échec, la séance est enregistrée sans parcours
+  const tr = runner.gps && runner.gps.track;
+  let routeErr = null;
+  if (tr && C.isValidTrack(tr) && tr.segments.some(sg => sg.length)) {
+    runner.saving = true;
+    const btn = $('#sumSave');
+    if (btn) { btn.disabled = true; btn.textContent = 'Enregistrement…'; }
+    try {
+      const route = C.buildRoute(tr, runner.t, runner.end.at, { id: `r${id}`, sessionId: id });
+      await routesApi.put(route);
+      entry.routeId = route.id;
+      askPersist();
+    } catch (e) { routeErr = e; }
+    if (!runner) return;
+  }
   closeRunner();
-  commit(d => d.sessions.push({ id: C.newId(), createdAt: Date.now(), ...entry }));
+  commit(d => d.sessions.push({ id, createdAt: Date.now(), ...entry }));
+  // Affiché après les gains d'XP : l'avertissement reste visible (3 notifications au plus à l'écran)
+  if (routeErr) toast('⚠️', routeErrorMsg(routeErr), 'badge');
+  else if (entry.routeId) toast('🗺️', 'Parcours GPS enregistré sur ton téléphone', 'badge');
 }
 
 function restoreFree(saved) {
@@ -2158,12 +2290,32 @@ function restoreFree(saved) {
   if (runner.stage === 'run') runner.marks = C.freeResumeMarks(runner.t, Date.now(), settings.announceEvery);
   showRunner();
   if (runner && runner.stage === 'run') toast('⏱', `${FREE_NAME[runner.kind]} en cours reprise`, 'badge');
+  // Suivi GPS absent du stockage local (ex. espace plein) : on le reprend de la copie de secours
+  if (!gt) {
+    const startedAt = saved.t.startedAt;
+    routesApi.getDraft().then(d => {
+      if (!d || !runner || runner.mode !== 'free' || !runner.t || runner.t.startedAt !== startedAt || runner.gps || !C.isValidTrack(d.track)) return;
+      runner.gps = { on: false, track: d.track, watchId: null, error: null };
+      runner.measured = d.measured || null;
+      persistRunner();
+      if (runner.stage === 'summary') drawFreeSummary(); else refreshGps();
+    }).catch(() => {});
+  }
+}
+
+// Aucun chrono dans le stockage local : séance libre retrouvée dans la copie de secours ?
+function restoreFromDraft() {
+  routesApi.getDraft().then(d => {
+    if (runner || !d || !d.t || !C.isValidFreeTimer(d.t) || Date.now() - d.t.startedAt > 24 * 3600e3) return;
+    restoreFree({ t: d.t, stage: d.stage, end: d.end, measured: d.measured, gps: { on: false, track: d.track } });
+    toast('🛟', 'Séance retrouvée grâce à la copie de secours du parcours', 'badge');
+  }).catch(() => {});
 }
 
 // Chrono resté ouvert lors de la dernière visite (app fermée en pleine séance)
 function restoreRunner() {
   const raw = storage.get(TIMER_KEY);
-  if (!raw) return;
+  if (!raw) return restoreFromDraft();
   try {
     const saved = JSON.parse(raw);
     if (saved.t && saved.t.mode === 'free') return restoreFree(saved);
@@ -2380,7 +2532,7 @@ function checkDay() {
 }
 setInterval(checkDay, 60000);
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState !== 'visible') { persistRunner(); return; }
+  if (document.visibilityState !== 'visible') { persistRunner(true); return; }
   checkDay();
   if (runner && runner.stage === 'run') {
     requestWake();
